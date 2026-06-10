@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — Capsules</title>
+  <link rel="stylesheet" href="./assets/tokens.css">
+</head>
+<body hidden>
+  <header class="shell-header">
+    <a class="wordmark" href="./capsules.html">Arkive</a>
+    <nav class="shell-nav" aria-label="Primary">
+      <a href="./capsules.html" aria-current="page">Capsules</a>
+      <a href="./people.html">People</a>
+      <a href="./settings.html">Settings</a>
+    </nav>
+    <div class="shell-account">
+      <span data-account-name></span>
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="shell-main">
+    <h1>Capsules</h1>
+
+    <div class="tabs" role="tablist" aria-label="Mailboxes">
+      <button class="tab" id="tab-mine" role="tab" aria-selected="true" aria-controls="panel-mine" type="button">My Capsules</button>
+      <button class="tab" id="tab-received" role="tab" aria-selected="false" aria-controls="panel-received" type="button">Received</button>
+    </div>
+
+    <section id="panel-mine" role="tabpanel" aria-labelledby="tab-mine">
+      <div class="empty-state">
+        <p class="empty-title">The capsules you create and seal will live here.</p>
+        <p class="empty-hint">Capsule lists arrive in the next build.</p>
+      </div>
+    </section>
+
+    <section id="panel-received" role="tabpanel" aria-labelledby="tab-received" hidden>
+      <div class="empty-state">
+        <p class="empty-title">Capsules sent to you will arrive here.</p>
+        <p class="empty-hint">Capsule lists arrive in the next build.</p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { bootSession, wireShell } from "./assets/arkive.js";
+
+    const boot = await bootSession();
+    wireShell(boot);
+
+    const tabs = [
+      { tab: document.getElementById("tab-mine"), panel: document.getElementById("panel-mine") },
+      { tab: document.getElementById("tab-received"), panel: document.getElementById("panel-received") },
+    ];
+    for (const { tab } of tabs) {
+      tab.addEventListener("click", () => {
+        for (const entry of tabs) {
+          const selected = entry.tab === tab;
+          entry.tab.setAttribute("aria-selected", String(selected));
+          entry.panel.hidden = !selected;
+        }
+      });
+    }
+  </script>
+</body>
+</html>

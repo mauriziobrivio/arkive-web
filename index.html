@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — Sign in</title>
+  <link rel="stylesheet" href="./assets/tokens.css">
+  <style>
+    .login-wrap {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 420px;
+      padding: 44px 40px 36px;
+      margin-top: 40px;
+    }
+    .login-head { text-align: center; }
+    .login-head h1 { margin-top: 18px; }
+    .login-sub {
+      color: var(--ink-soft);
+      margin-top: 10px;
+      font-size: 16px;
+    }
+    .login-form { margin-top: 8px; }
+    .login-form .form-row { margin-top: 18px; }
+    .login-form .error-text { margin-top: 14px; text-align: center; }
+    .login-form .btn-primary {
+      width: 100%;
+      margin-top: 20px;
+    }
+    .login-foot {
+      margin-top: 28px;
+      text-align: center;
+      font-size: 14px;
+      color: var(--ink-mute);
+      max-width: 420px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-head">
+      <div class="wordmark">Arkive</div>
+      <h1>Welcome back.</h1>
+      <p class="login-sub">Sign in to your Arkive.</p>
+    </div>
+
+    <div class="card login-card">
+      <form class="login-form" id="login-form" novalidate>
+        <div class="form-row">
+          <label class="field-label" for="email">Email</label>
+          <input class="field" id="email" name="email" type="email"
+                 autocomplete="email" inputmode="email" spellcheck="false" required>
+        </div>
+        <div class="form-row">
+          <label class="field-label" for="password">Password</label>
+          <input class="field" id="password" name="password" type="password"
+                 autocomplete="current-password" required>
+        </div>
+        <p class="error-text" id="login-error" role="alert" aria-live="polite"></p>
+        <button class="btn btn-primary" id="login-submit" type="submit">Sign In</button>
+      </form>
+    </div>
+
+    <p class="login-foot">
+      Need an account, or a password reset?<br>
+      Manage your account in the Arkive app.
+    </p>
+  </div>
+
+  <script type="module">
+    import { supabase, redirectIfSignedIn } from "./assets/arkive.js";
+
+    await redirectIfSignedIn();
+
+    const form = document.getElementById("login-form");
+    const emailField = document.getElementById("email");
+    const passwordField = document.getElementById("password");
+    const errorEl = document.getElementById("login-error");
+    const submitBtn = document.getElementById("login-submit");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      errorEl.textContent = "";
+
+      const email = emailField.value.trim().toLowerCase();
+      const password = passwordField.value;
+
+      if (!email || !password) {
+        errorEl.textContent = "Enter your email and password.";
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Signing in…";
+
+      try {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) {
+          errorEl.textContent = friendlyAuthError(error);
+          return;
+        }
+        window.location.replace("./capsules.html");
+      } catch (err) {
+        console.error("arkive: sign-in failed", err);
+        errorEl.textContent = "Can’t reach Arkive right now — check your connection and try again.";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Sign In";
+      }
+    });
+
+    function friendlyAuthError(error) {
+      const message = (error?.message ?? "").toLowerCase();
+      if (message.includes("invalid login credentials")) {
+        return "That email and password don’t match our records.";
+      }
+      if (message.includes("email not confirmed")) {
+        return "This account hasn’t been confirmed yet — finish setup in the Arkive app.";
+      }
+      if (error?.status === 0 || message.includes("fetch")) {
+        return "Can’t reach Arkive right now — check your connection and try again.";
+      }
+      return "Sign-in didn’t go through. Please try again.";
+    }
+  </script>
+</body>
+</html>

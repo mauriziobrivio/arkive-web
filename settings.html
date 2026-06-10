@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — Settings</title>
+  <link rel="stylesheet" href="./assets/tokens.css">
+  <style>
+    .settings-card {
+      max-width: 560px;
+      padding: 36px 40px;
+      margin-top: 32px;
+    }
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 24px;
+      padding: 14px 0;
+    }
+    .settings-row + .settings-row { border-top: 1px solid var(--border-soft); }
+    .settings-key { color: var(--ink-soft); font-size: 15px; }
+    .settings-value { color: var(--ink); font-size: 16px; text-align: right; }
+    .settings-note {
+      margin-top: 20px;
+      font-size: 14px;
+      color: var(--ink-mute);
+    }
+    .settings-actions { margin-top: 32px; }
+  </style>
+</head>
+<body hidden>
+  <header class="shell-header">
+    <a class="wordmark" href="./capsules.html">Arkive</a>
+    <nav class="shell-nav" aria-label="Primary">
+      <a href="./capsules.html">Capsules</a>
+      <a href="./people.html">People</a>
+      <a href="./settings.html" aria-current="page">Settings</a>
+    </nav>
+    <div class="shell-account">
+      <span data-account-name></span>
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="shell-main">
+    <h1>Settings</h1>
+
+    <div class="card settings-card">
+      <div class="settings-row">
+        <span class="settings-key">Name</span>
+        <span class="settings-value" data-account-name></span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-key">Email</span>
+        <span class="settings-value" data-account-email></span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-key">Plan</span>
+        <span class="settings-value" id="plan-value">Managed in the Arkive app</span>
+      </div>
+      <p class="settings-note">Account changes, plans, and password resets live in the Arkive app.</p>
+    </div>
+
+    <div class="settings-actions">
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </main>
+
+  <script type="module">
+    import { bootSession, wireShell, isComped } from "./assets/arkive.js";
+
+    const boot = await bootSession();
+    wireShell(boot);
+
+    if (isComped()) {
+      document.getElementById("plan-value").textContent = "Lifetime access";
+    }
+  </script>
+</body>
+</html>
