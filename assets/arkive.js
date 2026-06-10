@@ -1043,13 +1043,7 @@ export const ArkiveDeliveryEngine = {
 
     if (email) {
       try {
-        const data = await supabase.functions.invoke("send-capsule-emails", {
-          body: { capsule_id: row.id },
-        }).then(({ data, error }) => { if (error) throw error; return data; });
-        const parsed = typeof data === "string" ? JSON.parse(data) : data;
-        if (typeof parsed?.success !== "boolean") {
-          throw new Error("unexpected send-capsule-emails response shape");
-        }
+        const parsed = await this.invokeDeliveryEmail(row.id);
         if (parsed.success) {
           console.info("arkive: delivery email sent", parsed.email_id ?? "");
         } else {
@@ -1059,6 +1053,30 @@ export const ArkiveDeliveryEngine = {
         console.error("arkive: send-capsule-emails invoke failed (cron backstop applies)", err);
       }
     }
+  },
+
+  /** Raw-fetch invoke, deliberately NOT supabase-js functions.invoke:
+   *  the SDK adds an x-client-info header, which the function's CORS
+   *  allow-list (Authorization, Content-Type) doesn't include — the
+   *  preflight fails and the POST never leaves the browser. Sending
+   *  exactly those two headers fits the deployed v35 contract.
+   *  Strict {success} parsing (the pre-W80 assume-success bug class). */
+  async invokeDeliveryEmail(capsuleId) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error("no session for delivery-email invoke");
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/send-capsule-emails`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ capsule_id: capsuleId }),
+    });
+    const parsed = await response.json().catch(() => null);
+    if (typeof parsed?.success !== "boolean") {
+      throw new Error(`unexpected send-capsule-emails response shape (HTTP ${response.status})`);
+    }
+    return parsed;
   },
 
   /** Sender-side sweep (web runs it on capsules load, #237): deliver
