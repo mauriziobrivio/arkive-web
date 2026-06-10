@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — New Capsule</title>
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws5">
+  <style>
+    .create-main { max-width: 640px; }
+    .step-label { margin-top: 8px; display: block; }
+    .step-title { margin-top: 10px; }
+    .form-section { margin-top: 34px; }
+    .form-section + .form-section { margin-top: 30px; }
+    .person-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+    .person-option {
+      display: flex; align-items: baseline; justify-content: space-between;
+      padding: 13px 18px; cursor: pointer;
+      border: 1px solid var(--border-soft); border-radius: var(--radius-field);
+      background: var(--field-bg);
+    }
+    .person-option input { margin-right: 10px; }
+    .person-option.selected { border-color: var(--ink); }
+    .person-name { font-size: 16px; color: var(--ink); }
+    .person-label { font-size: 13px; color: var(--ink-mute); }
+    .guest-row { margin-top: 14px; }
+    .cover-preview {
+      width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius-field);
+      object-fit: cover; display: block; margin-top: 12px;
+      border: 1px solid var(--border-soft);
+    }
+    .create-actions { margin-top: 40px; display: flex; align-items: center; gap: 16px; }
+    .create-error { margin-top: 16px; }
+    .field-hint { font-size: 13px; color: var(--ink-mute); margin-top: 6px; }
+  </style>
+</head>
+<body hidden>
+  <header class="shell-header">
+    <a class="wordmark" href="./capsules.html">Arkive</a>
+    <nav class="shell-nav" aria-label="Primary">
+      <a href="./capsules.html" aria-current="page">Capsules</a>
+      <a href="./people.html">People</a>
+      <a href="./settings.html">Settings</a>
+    </nav>
+    <div class="shell-account">
+      <span data-account-name></span>
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="shell-main create-main">
+    <a class="back-link" href="./capsules.html" style="font-size:14px;color:var(--ink-soft)">← Capsules</a>
+    <span class="micro-label step-label">New capsule · Step 1 of 3</span>
+    <h1 class="step-title">Who is this for?</h1>
+
+    <div class="form-section">
+      <label class="field-label" for="title">Capsule title</label>
+      <input class="field" id="title" type="text" placeholder="A name for what you’re keeping" spellcheck="true">
+    </div>
+
+    <div class="form-section">
+      <span class="field-label">Recipient</span>
+      <div class="person-list" id="person-list"></div>
+      <div class="guest-row">
+        <label class="field-label" for="guest-email">…or send to an email address</label>
+        <input class="field" id="guest-email" type="email" placeholder="their@email.com" spellcheck="false">
+        <p class="field-hint">If they’re not on Arkive yet, the capsule waits for them.</p>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label class="field-label" for="cover">Cover photo (optional)</label>
+      <input class="field" id="cover" type="file" accept="image/*">
+      <img class="cover-preview" id="cover-preview" alt="" hidden>
+    </div>
+
+    <p class="error-text create-error" id="error" role="alert" aria-live="polite"></p>
+    <div class="create-actions">
+      <button class="btn btn-primary" id="continue" type="button">Save &amp; Continue</button>
+      <span class="field-hint" id="busy" hidden>Saving…</span>
+    </div>
+  </main>
+
+  <script type="module">
+    import {
+      bootSession, wireShell, supabase, fetchCapsuleById, ArkiveItemsCodec,
+      ArkiveUploads, ArkiveCapsuleWriter, wireUploadGuard, uploadsPending, createEl,
+    } from "./assets/arkive.js?v=ws5";
+
+    const boot = await bootSession();
+    wireShell(boot);
+    wireUploadGuard();
+    const userId = boot.user.id;
+
+    const params = new URLSearchParams(location.search);
+    let draftId = params.get("id");
+    const isNew = !draftId;
+    if (isNew) draftId = crypto.randomUUID();
+
+    const draft = {
+      id: draftId, title: "", items: [], coverStoragePath: null,
+      recipientProfileId: null, recipientName: null, recipientRelationship: null,
+      recipientEmail: null, guestEmail: null, revealMessage: null, draftStep: 1,
+    };
+
+    const errorEl = document.getElementById("error");
+    const titleField = document.getElementById("title");
+    const guestField = document.getElementById("guest-email");
+    let selectedPerson = null;
+
+    // people picker (own people, minus self — iOS recipient list parity)
+    const people = await loadPeople();
+    const listEl = document.getElementById("person-list");
+    for (const person of people) {
+      const option = createEl("label", "person-option");
+      const left = createEl("span");
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "recipient";
+      radio.addEventListener("change", () => {
+        selectedPerson = person;
+        guestField.value = "";
+        listEl.querySelectorAll(".person-option").forEach((o) => o.classList.remove("selected"));
+        option.classList.add("selected");
+      });
+      left.appendChild(radio);
+      left.appendChild(createEl("span", "person-name", person.display_name ?? ""));
+      option.appendChild(left);
+      if (person.connection_label) option.appendChild(createEl("span", "person-label", person.connection_label));
+      listEl.appendChild(option);
+    }
+    if (people.length === 0) {
+      listEl.appendChild(createEl("p", "field-hint", "No people yet — add them in the Arkive app, or send to an email below."));
+    }
+    guestField.addEventListener("input", () => {
+      if (guestField.value.trim() && selectedPerson) {
+        selectedPerson = null;
+        listEl.querySelectorAll(".person-option").forEach((o) => {
+          o.classList.remove("selected");
+          o.querySelector("input").checked = false;
+        });
+      }
+    });
+
+    // existing draft → prefill
+    if (!isNew) {
+      try {
+        const row = await fetchCapsuleById(draftId);
+        if (row) {
+          draft.title = row.title ?? "";
+          draft.items = ArkiveItemsCodec.decode(row.items_json);
+          draft.coverStoragePath = row.cover_storage_path;
+          draft.recipientProfileId = row.recipient_profile_id;
+          draft.recipientName = row.recipient_name;
+          draft.recipientRelationship = row.recipient_relationship_snapshot;
+          draft.recipientEmail = row.recipient_contact_hint;
+          draft.guestEmail = row.guest_delivery_email;
+          draft.revealMessage = row.reveal_message;
+          titleField.value = draft.title;
+          if (row.recipient_profile_id) {
+            const index = people.findIndex((p) => p.id === row.recipient_profile_id);
+            if (index >= 0) {
+              selectedPerson = people[index];
+              const option = listEl.children[index];
+              option.classList.add("selected");
+              option.querySelector("input").checked = true;
+            }
+          } else if (row.guest_delivery_email) {
+            guestField.value = row.guest_delivery_email;
+          }
+        }
+      } catch (err) { console.error("arkive: draft load failed", err); }
+    }
+
+    // cover pick → immediate upload (path is keyed by the draft id)
+    document.getElementById("cover").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      errorEl.textContent = "";
+      try {
+        draft.coverStoragePath = await ArkiveUploads.cover(file, userId, draftId);
+        const preview = document.getElementById("cover-preview");
+        preview.src = URL.createObjectURL(file);
+        preview.hidden = false;
+      } catch (err) {
+        console.error("arkive: cover upload failed", err);
+        errorEl.textContent = "The cover photo didn’t upload — try again.";
+      }
+    });
+
+    document.getElementById("continue").addEventListener("click", async () => {
+      errorEl.textContent = "";
+      const guestEmail = guestField.value.trim().toLowerCase();
+      if (!selectedPerson && !guestEmail) {
+        errorEl.textContent = "Choose a person, or enter an email address.";
+        return;
+      }
+      if (uploadsPending()) { errorEl.textContent = "The cover is still uploading — one moment."; return; }
+      draft.title = titleField.value.trim();
+      if (selectedPerson) {
+        draft.recipientProfileId = selectedPerson.id;
+        draft.recipientName = selectedPerson.display_name ?? null;
+        draft.recipientRelationship = selectedPerson.connection_label ?? null;
+        draft.recipientEmail = selectedPerson.delivery_email ?? null;
+        draft.guestEmail = null;
+      } else {
+        draft.recipientProfileId = null;
+        draft.recipientName = null;
+        draft.recipientRelationship = null;
+        draft.recipientEmail = null;
+        draft.guestEmail = guestEmail;
+      }
+      draft.draftStep = 2;
+      const busy = document.getElementById("busy");
+      busy.hidden = false;
+      try {
+        await ArkiveCapsuleWriter.saveDraft(draft, userId, { isNew });
+        location.assign(`./create-2.html?id=${encodeURIComponent(draftId)}`);
+      } catch (err) {
+        console.error("arkive: draft save failed", err);
+        errorEl.textContent = "The draft didn’t save — check your connection and try again.";
+      } finally {
+        busy.hidden = true;
+      }
+    });
+
+    async function loadPeople() {
+      try {
+        const { data, error } = await supabase.from("people")
+          .select("id, display_name, connection_label, birth_date, delivery_email, capsule_emails_enabled, is_self")
+          .eq("account_id", userId).order("created_at", { ascending: true }).limit(50);
+        if (error) throw error;
+        return (data ?? []).filter((p) => !p.is_self);
+      } catch (err) {
+        console.error("arkive: people load failed", err);
+        return [];
+      }
+    }
+  </script>
+</body>
+</html>

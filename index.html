@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — Sign in</title>
-  <link rel="stylesheet" href="./assets/tokens.css">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws5">
   <style>
     .login-wrap {
       min-height: 100vh;
@@ -76,7 +76,7 @@
   </div>
 
   <script type="module">
-    import { supabase, redirectIfSignedIn } from "./assets/arkive.js";
+    import { supabase, redirectIfSignedIn } from "./assets/arkive.js?v=ws5";
 
     await redirectIfSignedIn();
 

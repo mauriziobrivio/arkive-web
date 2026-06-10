@@ -434,7 +434,36 @@ export const ArkiveItemsCodec = {
       }))
       .sort((a, b) => a.sortIndex - b.sortIndex);
   },
-  encode() { throw new Error("ArkiveItemsCodec.encode arrives in WS5 (create + seal)"); },
+  /** Normalized items → the EXACT raw shape iOS writes. Keys are
+   *  load-bearing in 13 storage RLS policies. Photos carry BOTH path
+   *  keys; photoData/base64 is stripped by construction
+   *  (itemsStrippingBinaryData parity); letters are inline-only. */
+  encode(items) {
+    return items.map((item, index) => {
+      const base = {
+        id: item.id,
+        kind: item.kind,
+        title: item.title ?? "",
+        subtitle: item.subtitle ?? "",
+        sort_index: index,
+      };
+      if (item.momentDate) base.moment_date = item.momentDate;
+      switch (item.kind) {
+        case ITEM_KIND.photo:
+          return {
+            ...base,
+            photoStoragePath: item.photoStoragePath ?? item.imageStoragePath,
+            image_storage_path: item.imageStoragePath ?? item.photoStoragePath,
+          };
+        case ITEM_KIND.video:
+          return { ...base, videoStoragePath: item.videoStoragePath };
+        case ITEM_KIND.audio:
+          return { ...base, audioStoragePath: item.audioStoragePath };
+        default:
+          return base; // Letter (+ tolerated kinds): inline content only
+      }
+    });
+  },
 };
 
 /** Photo bytes, iOS resolution order (CapsulePhotoDetailView): inline
@@ -696,6 +725,382 @@ export const ArkiveStorageHelpers = {
 };
 
 const signedUrlCache = new Map();
+
+/* ------------------------------------------------------------
+   WS5 — create + seal + deliver.
+   ------------------------------------------------------------ */
+
+/* —— freemium create-walls (client-authoritative; #237/#239) —— */
+
+export function sealGate({ sealedCount, releaseDate, now = new Date() }) {
+  if (isComped()) return { allowed: true };
+  if (sealedCount >= FREE_LIMITS.maxSealedCapsules) {
+    return { allowed: false, reason: `Your free capsule is sealed. ${GATE_COPY}` };
+  }
+  if (releaseDate) {
+    const cap = new Date(now);
+    cap.setFullYear(cap.getFullYear() + FREE_LIMITS.maxRevealHorizonYears);
+    if (releaseDate > cap) {
+      return { allowed: false, reason: `Free capsules open within two years. ${GATE_COPY}` };
+    }
+  }
+  return { allowed: true };
+}
+
+export async function countOwnSealedCapsules(userId) {
+  const { count, error } = await supabase
+    .from("capsules").select("id", { count: "exact", head: true })
+    .eq("creator_user_id", userId).neq("mailbox", MAILBOX.received).neq("status", STATUS.draft);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/* —— uploads (private buckets; uid prefix stays lowercase) —— */
+
+export const VIDEO_LIMIT_BYTES = Object.freeze({
+  free: 300 * 1024 * 1024,   // Decision #239
+  paid: 1024 * 1024 * 1024,  // = the bucket's hard cap
+});
+const AUDIO_LIMIT_BYTES = 25 * 1024 * 1024; // bucket cap
+
+let uploadsInFlight = 0;
+export function uploadsPending() { return uploadsInFlight > 0; }
+
+/** Keep-tab-open guard while uploads run (web analog of iOS fix #7 —
+ *  no background-session rescue exists in a browser either). */
+export function wireUploadGuard() {
+  window.addEventListener("beforeunload", (event) => {
+    if (uploadsInFlight > 0) { event.preventDefault(); event.returnValue = ""; }
+  });
+}
+
+async function uploadToBucket(bucket, path, blob, { contentType, cacheControl, upsert = false }) {
+  uploadsInFlight += 1;
+  try {
+    const { error } = await supabase.storage.from(bucket).upload(path, blob, {
+      contentType, upsert, ...(cacheControl ? { cacheControl } : {}),
+    });
+    if (error) throw error;
+    return path;
+  } finally {
+    uploadsInFlight -= 1;
+  }
+}
+
+async function recompressImage(file, { maxDimension = null, quality = 0.85 } = {}) {
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  let { width, height } = bitmap;
+  if (maxDimension && Math.max(width, height) > maxDimension) {
+    const scale = maxDimension / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("image encode failed"))), "image/jpeg", quality);
+  });
+}
+
+const randomSuffix = () => Math.random().toString(16).slice(2, 10);
+const fileExtension = (name) => (name.split(".").pop() ?? "").toLowerCase();
+const fileMomentDate = (file) => new Date(file.lastModified || Date.now()).toISOString();
+
+export const ArkiveUploads = {
+  /** Photo → moments-media, JPEG q0.85 + 480px thumb q0.75 (iOS parity). */
+  async photo(file, userId) {
+    const itemId = crypto.randomUUID();
+    const stem = `${userId}/photos/${Date.now()}_${randomSuffix()}`;
+    const main = await recompressImage(file, { quality: 0.85 });
+    const thumb = await recompressImage(file, { maxDimension: 480, quality: 0.75 });
+    const storagePath = await uploadToBucket(BUCKET.momentsMedia, `${stem}.jpg`, main, { contentType: "image/jpeg" });
+    const thumbnailPath = await uploadToBucket(BUCKET.momentsMedia, `${stem}_thumb.jpg`, thumb, { contentType: "image/jpeg" });
+    return { itemId, storagePath, thumbnailPath, mimeType: "image/jpeg", fileSizeBytes: main.size, momentDate: fileMomentDate(file) };
+  },
+
+  /** Video → arkive-videos, tier-gated (Free 300MB / Paid 1GB, #239),
+   *  mp4/quicktime only — the bucket rejects everything else. No
+   *  transcode on web; HEVC ships with an honest note (brief default). */
+  async video(file, userId, { isPaid }) {
+    const ext = fileExtension(file.name);
+    const contentType = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime" }[ext];
+    if (!contentType) throw new Error("Videos must be .mp4 or .mov — other formats can’t be stored.");
+    const limit = isPaid ? VIDEO_LIMIT_BYTES.paid : VIDEO_LIMIT_BYTES.free;
+    if (file.size > limit) {
+      const mb = Math.round(limit / 1048576);
+      throw new Error(`This video is over the ${mb >= 1024 ? "1 GB" : `${mb} MB`} limit. Try a shorter clip or a smaller export.`);
+    }
+    const itemId = crypto.randomUUID();
+    const storagePath = await uploadToBucket(
+      BUCKET.videos,
+      `${userId}/videos/${Date.now()}_${randomSuffix()}.${ext === "m4v" ? "mp4" : ext}`,
+      file, { contentType },
+    );
+    return { itemId, storagePath, mimeType: contentType, fileSizeBytes: file.size, momentDate: fileMomentDate(file), quicktime: contentType === "video/quicktime" };
+  },
+
+  /** Audio → arkive-audio, m4a/mp3 FILE UPLOAD ONLY (no web recording —
+   *  #237 Q5; MediaRecorder yields formats the bucket rejects). */
+  async audio(file, userId) {
+    const ext = fileExtension(file.name);
+    const contentType = { m4a: "audio/m4a", mp3: "audio/mpeg" }[ext];
+    if (!contentType) throw new Error("Recordings must be .m4a or .mp3 files.");
+    if (file.size > AUDIO_LIMIT_BYTES) throw new Error("This recording is over the 25 MB limit.");
+    const itemId = crypto.randomUUID();
+    const storagePath = await uploadToBucket(BUCKET.audio, `${userId}/audio/${itemId}.${ext}`, file, { contentType });
+    return { itemId, storagePath, mimeType: contentType, fileSizeBytes: file.size, momentDate: fileMomentDate(file) };
+  },
+
+  /** Cover photo → arkive-photos {uid}/covers/{capsuleID}.jpg (re-pick replaces). */
+  async cover(file, userId, capsuleId) {
+    const blob = await recompressImage(file, { quality: 0.85 });
+    return uploadToBucket(BUCKET.photos, `${userId}/covers/${capsuleId}.jpg`, blob, {
+      contentType: "image/jpeg", cacheControl: "31536000", upsert: true,
+    });
+  },
+};
+
+/** moments row for a direct upload (source='direct_upload') — keeps the
+ *  iOS Arkive tab coherent with web-created capsules (#237 Q12).
+ *  moments.id === the items_json item id (iOS seal-backfill contract).
+ *  title '' is canonical (Decision #149); never NULL. */
+export async function insertDirectUploadMoment({ itemId, userId, mediaType, storagePath, thumbnailPath = null, mimeType, fileSizeBytes, momentDate, durationSeconds = null }) {
+  try {
+    const { error } = await supabase.from("moments").insert({
+      id: itemId,
+      account_id: userId,
+      media_type: mediaType,
+      title: "",
+      moment_date: momentDate ?? new Date().toISOString(),
+      date_source: "metadata",
+      storage_path: storagePath,
+      thumbnail_path: thumbnailPath,
+      mime_type: mimeType,
+      file_size_bytes: fileSizeBytes,
+      duration_seconds: durationSeconds,
+      source: "direct_upload",
+      has_server_bytes: true,
+    });
+    if (error) throw error;
+  } catch (err) {
+    console.error("arkive: moments insert failed (non-fatal — items_json is authoritative)", err);
+  }
+}
+
+/* —— draft / seal writer (sender row; Phase-0 §R4 contract) ——
+   Never written: sender_account_id (phantom), email_notification_sent
+   (server-set), contributor_count, recipient *_snapshot columns. —— */
+
+export const ArkiveCapsuleWriter = {
+  buildDraftPayload(draft, userId) {
+    return {
+      id: draft.id,
+      shared_capsule_id: draft.id,
+      creator_user_id: userId,
+      mailbox: MAILBOX.myCapsules,
+      direction: DIRECTION.sent,
+      state: STATE.draft,
+      status: STATUS.draft,
+      dispatch_state: DISPATCH_STATE.pending,
+      title: draft.title ?? "",
+      reveal_message: draft.revealMessage ?? null,
+      recipient_name: draft.recipientName ?? null,
+      recipient_profile_id: draft.recipientProfileId ?? null,
+      recipient_relationship_snapshot: draft.recipientRelationship ?? null,
+      recipient_contact_hint: draft.recipientEmail ?? null,
+      guest_delivery_email: draft.guestEmail ?? null,
+      recipient_routing_state: draft.recipientProfileId
+        ? RECIPIENT_ROUTING_STATE.localProfileOnly
+        : RECIPIENT_ROUTING_STATE.awaitingRecipientAccount,
+      cover_storage_path: draft.coverStoragePath ?? null,
+      items_json: ArkiveItemsCodec.encode(draft.items ?? []),
+      letter_count: (draft.items ?? []).filter((i) => i.kind === ITEM_KIND.letter).length,
+      moment_count: (draft.items ?? []).filter((i) => i.kind !== ITEM_KIND.letter).length,
+      draft_step: draft.draftStep ?? 1,
+      last_modified_at: new Date().toISOString(),
+    };
+  },
+
+  async saveDraft(draft, userId, { isNew }) {
+    const payload = this.buildDraftPayload(draft, userId);
+    if (isNew) {
+      const { error } = await supabase.from("capsules").insert(payload);
+      if (error) throw error;
+    } else {
+      const { id, creator_user_id, ...updatable } = payload;
+      const { error } = await supabase.from("capsules")
+        .update(updatable).eq("id", draft.id).eq("creator_user_id", userId);
+      if (error) throw error;
+    }
+    return payload;
+  },
+
+  /** Draft → sealed. Resolves the recipient account via the
+   *  find_account_by_email RPC (Phase-0 §R4) at seal time. */
+  async seal(draft, userId, { deliveryType, releaseAtISO, senderDisplayName, senderProfileId }) {
+    const email = draft.recipientEmail ?? draft.guestEmail ?? null;
+    let recipientAccountId = null;
+    if (email) {
+      try {
+        const { data, error } = await supabase.rpc("find_account_by_email", { input_email: email });
+        if (error) throw error;
+        recipientAccountId = data?.[0]?.account_id ?? null;
+      } catch (err) {
+        console.warn("arkive: recipient resolution failed (sealing unlinked)", err);
+      }
+    }
+    const deliveryRule = deliveryType === DELIVERY_TYPE.manualDelivery ? DELIVERY_RULE.manual : DELIVERY_RULE.date;
+    const routing = recipientAccountId
+      ? RECIPIENT_ROUTING_STATE.linkedToRecipientAccount
+      : (draft.guestEmail ? RECIPIENT_ROUTING_STATE.awaitingRecipientAccount : RECIPIENT_ROUTING_STATE.localProfileOnly);
+    const sealPatch = {
+      state: STATE.sealed,
+      status: STATUS.scheduled,
+      sealed_at: new Date().toISOString(),
+      release_at: releaseAtISO,
+      delivery_type: deliveryType,
+      delivery_rule: deliveryRule,
+      draft_step: null,
+      title: draft.title ?? "",
+      reveal_message: draft.revealMessage ?? null,
+      items_json: ArkiveItemsCodec.encode(draft.items ?? []),
+      letter_count: (draft.items ?? []).filter((i) => i.kind === ITEM_KIND.letter).length,
+      moment_count: (draft.items ?? []).filter((i) => i.kind !== ITEM_KIND.letter).length,
+      cover_storage_path: draft.coverStoragePath ?? null,
+      recipient_account_id: recipientAccountId,
+      recipient_routing_state: routing,
+      recipient_contact_hint: email,
+      sender_display_name_snapshot: senderDisplayName ?? null,
+      sender_profile_id: senderProfileId ?? null,
+      last_modified_at: new Date().toISOString(),
+    };
+    const { data, error } = await supabase.from("capsules")
+      .update(sealPatch).eq("id", draft.id).eq("creator_user_id", userId)
+      .select(CAPSULES_SELECT).single();
+    if (error) throw error;
+    return data;
+  },
+};
+
+/* —— delivery engine (Phase-0 §R4; #240 at-seal parity) —— */
+
+export const ArkiveDeliveryEngine = {
+  /** The three-step sequence: sender UPDATE (full field-set, sharp edge
+   *  #5) → Received-row INSERT (mirror trigger backfills content;
+   *  23505 = already delivered, no-op) → send-capsule-emails invoke
+   *  with STRICT {success} parsing. email_notification_sent is never
+   *  written — the Edge Function flips it after Resend confirms. */
+  async deliver(row, userId) {
+    const nowISO = new Date().toISOString();
+    const email = row.recipient_contact_hint || row.guest_delivery_email || null;
+    const senderPatch = {
+      state: STATE.delivered,
+      status: STATUS.delivered,
+      dispatch_state: DISPATCH_STATE.sent,
+      dispatch_method: email ? DISPATCH_METHOD.email : DISPATCH_METHOD.inApp,
+      delivery_prepared_at: nowISO,
+      delivery_attempted_at: nowISO,
+      delivery_completed_at: nowISO,
+      delivery_destination: email ?? "Arkive Inbox",
+      last_modified_at: nowISO,
+      ...(row.release_at && new Date(row.release_at) > new Date() ? { release_at: nowISO } : {}),
+    };
+    const { error: senderError } = await supabase.from("capsules")
+      .update(senderPatch).eq("id", row.id).eq("creator_user_id", userId);
+    if (senderError) throw senderError;
+
+    if (row.recipient_account_id) {
+      const { error: insertError } = await supabase.from("capsules").insert({
+        id: crypto.randomUUID(),
+        shared_capsule_id: row.id,
+        creator_user_id: userId,
+        recipient_account_id: row.recipient_account_id,
+        recipient_profile_id: row.recipient_profile_id ?? null,
+        recipient_name: row.recipient_name ?? null,
+        recipient_relationship_snapshot: row.recipient_relationship_snapshot ?? null,
+        recipient_contact_hint: row.recipient_contact_hint ?? null,
+        mailbox: MAILBOX.received,
+        direction: DIRECTION.received,
+        state: STATE.delivered,
+        status: STATUS.delivered,
+        recipient_routing_state: RECIPIENT_ROUTING_STATE.routedToRecipientInbox,
+        delivery_type: row.delivery_type,
+        delivery_rule: row.delivery_rule,
+        release_at: row.release_at ?? nowISO,
+        sealed_at: row.sealed_at,
+        dispatch_state: DISPATCH_STATE.sent,
+        dispatch_method: email ? DISPATCH_METHOD.email : DISPATCH_METHOD.inApp,
+        delivery_completed_at: nowISO,
+        // title/items_json/counts/cover/reveal_message/sender snapshot:
+        // intentionally omitted — mirror_sender_columns_to_recipient_row
+        // backfills them from this sender row (runs before validation).
+      });
+      if (insertError && insertError.code !== "23505") throw insertError;
+    }
+
+    if (email) {
+      try {
+        const data = await supabase.functions.invoke("send-capsule-emails", {
+          body: { capsule_id: row.id },
+        }).then(({ data, error }) => { if (error) throw error; return data; });
+        const parsed = typeof data === "string" ? JSON.parse(data) : data;
+        if (typeof parsed?.success !== "boolean") {
+          throw new Error("unexpected send-capsule-emails response shape");
+        }
+        if (parsed.success) {
+          console.info("arkive: delivery email sent", parsed.email_id ?? "");
+        } else {
+          console.warn("arkive: delivery email not sent —", parsed.error ?? "unknown", "(daily cron is the backstop)");
+        }
+      } catch (err) {
+        console.error("arkive: send-capsule-emails invoke failed (cron backstop applies)", err);
+      }
+    }
+  },
+
+  /** Sender-side sweep (web runs it on capsules load, #237): deliver
+   *  due scheduled capsules, then reconcile sender 'Opened' from the
+   *  recipient twins (client-side on iOS too — no DB trigger). Returns
+   *  the number of rows it changed so callers can re-render. */
+  async runSenderSweep(userId, outgoingRows) {
+    let changed = 0;
+    const now = new Date();
+    const due = outgoingRows.filter((r) =>
+      r.status === STATUS.scheduled && r.delivery_rule === DELIVERY_RULE.date
+      && r.release_at && new Date(r.release_at) <= now);
+    for (const row of due) {
+      try { await this.deliver(row, userId); changed += 1; }
+      catch (err) { console.error("arkive: sweep delivery failed", row.id, err); }
+    }
+
+    const deliveredIds = outgoingRows
+      .filter((r) => r.status === STATUS.delivered)
+      .map((r) => r.id);
+    if (deliveredIds.length > 0) {
+      try {
+        const { data: twins, error } = await supabase.from("capsules")
+          .select("shared_capsule_id, opened_at")
+          .in("shared_capsule_id", deliveredIds)
+          .eq("mailbox", MAILBOX.received)
+          .not("opened_at", "is", null);
+        if (error) throw error;
+        for (const twin of twins ?? []) {
+          const { error: reconcileError } = await supabase.from("capsules")
+            .update({ status: STATUS.opened, opened_at: twin.opened_at, last_modified_at: new Date().toISOString() })
+            .eq("id", twin.shared_capsule_id).eq("creator_user_id", userId);
+          if (reconcileError) console.error("arkive: opened reconciliation failed", reconcileError);
+          else changed += 1;
+        }
+      } catch (err) {
+        console.error("arkive: opened reconciliation query failed", err);
+      }
+    }
+    return changed;
+  },
+};
 
 /** TODO(WS5) — delivery engine.
  *  Sender-side sweep (web runs it per Decision #237) + Deliver Now:

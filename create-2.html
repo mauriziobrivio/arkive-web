@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — New Capsule</title>
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws5">
+  <style>
+    .create-main { max-width: 640px; }
+    .step-label { margin-top: 8px; display: block; }
+    .step-title { margin-top: 10px; }
+    .form-section { margin-top: 34px; }
+    .letter-compose .field + .field { margin-top: 12px; }
+    .letter-compose textarea.field { min-height: 170px; resize: vertical; line-height: 1.7; }
+    .letter-compose .btn { margin-top: 12px; }
+    .upload-row { margin-top: 14px; }
+    .field-hint { font-size: 13px; color: var(--ink-mute); margin-top: 6px; }
+    .hevc-note { color: var(--ink-soft); }
+    .upload-banner {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--ink); color: var(--paper);
+      padding: 12px 22px; border-radius: 999px; font-size: 14px;
+      box-shadow: 0 10px 30px rgba(20, 17, 14, 0.25);
+    }
+    .item-rows { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .item-row {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+      padding: 12px 16px;
+    }
+    .item-row .micro-label { flex: 0 0 64px; }
+    .item-row-title { flex: 1; font-size: 15px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .item-remove { background: none; border: none; color: var(--ink-mute); font-family: var(--font-serif); font-size: 13px; cursor: pointer; }
+    .item-remove:hover { color: var(--destructive); }
+    .create-actions { margin-top: 40px; display: flex; align-items: center; gap: 16px; }
+  </style>
+</head>
+<body hidden>
+  <header class="shell-header">
+    <a class="wordmark" href="./capsules.html">Arkive</a>
+    <nav class="shell-nav" aria-label="Primary">
+      <a href="./capsules.html" aria-current="page">Capsules</a>
+      <a href="./people.html">People</a>
+      <a href="./settings.html">Settings</a>
+    </nav>
+    <div class="shell-account">
+      <span data-account-name></span>
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="shell-main create-main">
+    <a class="back-link" id="back-link" href="./create-1.html" style="font-size:14px;color:var(--ink-soft)">← Back</a>
+    <span class="micro-label step-label">New capsule · Step 2 of 3</span>
+    <h1 class="step-title">What will it hold?</h1>
+
+    <div class="form-section letter-compose">
+      <span class="field-label">Write a letter</span>
+      <input class="field" id="letter-title" type="text" placeholder="Letter title (optional)">
+      <textarea class="field" id="letter-body" placeholder="Write what you want them to read…" spellcheck="true"></textarea>
+      <button class="btn btn-quiet" id="add-letter" type="button">Add Letter</button>
+    </div>
+
+    <div class="form-section">
+      <span class="field-label">Add moments</span>
+      <div class="upload-row">
+        <label class="field-label" for="photos">Photos</label>
+        <input class="field" id="photos" type="file" accept="image/*" multiple>
+      </div>
+      <div class="upload-row">
+        <label class="field-label" for="video">Video (.mp4 / .mov · up to <span id="video-limit"></span>)</label>
+        <input class="field" id="video" type="file" accept=".mp4,.mov,.m4v,video/mp4,video/quicktime">
+        <p class="field-hint hevc-note" id="hevc-note" hidden>Some videos from Apple devices (HEVC) may not play in every browser — they’ll always play in the Arkive app.</p>
+      </div>
+      <div class="upload-row">
+        <label class="field-label" for="audio">Voice recording (.m4a / .mp3 file)</label>
+        <input class="field" id="audio" type="file" accept=".m4a,.mp3,audio/mp4,audio/mpeg">
+        <p class="field-hint">Recording lives in the Arkive app — here you can attach an audio file.</p>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <span class="field-label">In this capsule</span>
+      <div class="item-rows" id="item-rows"></div>
+      <p class="field-hint" id="no-items">Nothing yet — add a letter or some moments above.</p>
+    </div>
+
+    <p class="error-text" id="error" role="alert" aria-live="polite"></p>
+    <div class="create-actions">
+      <button class="btn btn-primary" id="continue" type="button">Save &amp; Continue</button>
+      <span class="field-hint" id="busy" hidden>Saving…</span>
+    </div>
+    <div class="upload-banner" id="upload-banner" hidden>Uploading — keep this tab open.</div>
+  </main>
+
+  <script type="module">
+    import {
+      bootSession, wireShell, fetchCapsuleById, ArkiveItemsCodec, ArkiveUploads,
+      ArkiveCapsuleWriter, insertDirectUploadMoment, wireUploadGuard, uploadsPending,
+      isComped, createEl, itemDisplayTitle, ITEM_KIND,
+    } from "./assets/arkive.js?v=ws5";
+
+    const boot = await bootSession();
+    wireShell(boot);
+    wireUploadGuard();
+    const userId = boot.user.id;
+
+    const params = new URLSearchParams(location.search);
+    const draftId = params.get("id");
+    if (!draftId) location.replace("./create-1.html");
+    document.getElementById("back-link").href = `./create-1.html?id=${encodeURIComponent(draftId)}`;
+    document.getElementById("video-limit").textContent = isComped() ? "1 GB" : "300 MB";
+
+    const row = await fetchCapsuleById(draftId);
+    if (!row) { location.replace("./create-1.html"); throw new Error("draft missing"); }
+    const draft = {
+      id: row.id, title: row.title ?? "", items: ArkiveItemsCodec.decode(row.items_json),
+      coverStoragePath: row.cover_storage_path,
+      recipientProfileId: row.recipient_profile_id, recipientName: row.recipient_name,
+      recipientRelationship: row.recipient_relationship_snapshot,
+      recipientEmail: row.recipient_contact_hint, guestEmail: row.guest_delivery_email,
+      revealMessage: row.reveal_message, draftStep: 2,
+    };
+
+    const errorEl = document.getElementById("error");
+    const banner = document.getElementById("upload-banner");
+    const bannerTimer = setInterval(() => { banner.hidden = !uploadsPending(); }, 400);
+    renderItems();
+
+    document.getElementById("add-letter").addEventListener("click", () => {
+      const body = document.getElementById("letter-body").value;
+      if (!body.trim()) { errorEl.textContent = "The letter needs some words first."; return; }
+      errorEl.textContent = "";
+      draft.items.push({
+        id: crypto.randomUUID(), kind: ITEM_KIND.letter,
+        title: document.getElementById("letter-title").value.trim(), subtitle: body,
+      });
+      document.getElementById("letter-title").value = "";
+      document.getElementById("letter-body").value = "";
+      renderItems();
+    });
+
+    document.getElementById("photos").addEventListener("change", async (event) => {
+      errorEl.textContent = "";
+      for (const file of Array.from(event.target.files ?? [])) {
+        try {
+          const up = await ArkiveUploads.photo(file, userId);
+          await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType: "photo", storagePath: up.storagePath, thumbnailPath: up.thumbnailPath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+          draft.items.push({ id: up.itemId, kind: ITEM_KIND.photo, title: "", subtitle: "", momentDate: up.momentDate, imageStoragePath: up.storagePath, photoStoragePath: up.storagePath });
+          renderItems();
+        } catch (err) {
+          console.error("arkive: photo upload failed", err);
+          errorEl.textContent = err.message || "A photo didn’t upload — try again.";
+        }
+      }
+      event.target.value = "";
+    });
+
+    document.getElementById("video").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      errorEl.textContent = "";
+      try {
+        const up = await ArkiveUploads.video(file, userId, { isPaid: isComped() });
+        await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType: "video", storagePath: up.storagePath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+        draft.items.push({ id: up.itemId, kind: ITEM_KIND.video, title: "", subtitle: "", momentDate: up.momentDate, videoStoragePath: up.storagePath });
+        document.getElementById("hevc-note").hidden = !up.quicktime;
+        renderItems();
+      } catch (err) {
+        console.error("arkive: video upload failed", err);
+        errorEl.textContent = err.message || "The video didn’t upload — try again.";
+      }
+      event.target.value = "";
+    });
+
+    document.getElementById("audio").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      errorEl.textContent = "";
+      try {
+        const up = await ArkiveUploads.audio(file, userId);
+        await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType: "audio", storagePath: up.storagePath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+        draft.items.push({ id: up.itemId, kind: ITEM_KIND.audio, title: "", subtitle: "", momentDate: up.momentDate, audioStoragePath: up.storagePath });
+        renderItems();
+      } catch (err) {
+        console.error("arkive: audio upload failed", err);
+        errorEl.textContent = err.message || "The recording didn’t upload — try again.";
+      }
+      event.target.value = "";
+    });
+
+    document.getElementById("continue").addEventListener("click", async () => {
+      errorEl.textContent = "";
+      if (uploadsPending()) { errorEl.textContent = "Still uploading — keep this tab open a moment longer."; return; }
+      draft.draftStep = 3;
+      const busy = document.getElementById("busy");
+      busy.hidden = false;
+      try {
+        await ArkiveCapsuleWriter.saveDraft(draft, userId, { isNew: false });
+        location.assign(`./create-3.html?id=${encodeURIComponent(draftId)}`);
+      } catch (err) {
+        console.error("arkive: draft save failed", err);
+        errorEl.textContent = "The draft didn’t save — check your connection and try again.";
+      } finally {
+        busy.hidden = true;
+      }
+    });
+
+    function renderItems() {
+      const rows = document.getElementById("item-rows");
+      rows.textContent = "";
+      document.getElementById("no-items").hidden = draft.items.length > 0;
+      draft.items.forEach((item, index) => {
+        const rowEl = createEl("div", "card item-row");
+        rowEl.appendChild(createEl("span", "micro-label", item.kind === ITEM_KIND.textNote ? "Note" : item.kind));
+        const label = item.kind === ITEM_KIND.letter
+          ? (item.title || `${item.subtitle.slice(0, 60)}…`)
+          : (itemDisplayTitle(item) || "Added just now");
+        rowEl.appendChild(createEl("span", "item-row-title", label));
+        const remove = createEl("button", "item-remove", "Remove");
+        remove.type = "button";
+        remove.addEventListener("click", () => { draft.items.splice(index, 1); renderItems(); });
+        rowEl.appendChild(remove);
+        rows.appendChild(rowEl);
+      });
+    }
+  </script>
+</body>
+</html>

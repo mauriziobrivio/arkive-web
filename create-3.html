@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — Seal Capsule</title>
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws5">
+  <style>
+    .create-main { max-width: 640px; }
+    .step-label { margin-top: 8px; display: block; }
+    .step-title { margin-top: 10px; }
+    .form-section { margin-top: 34px; }
+    .schedule-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+    .schedule-option {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 13px 18px; cursor: pointer;
+      border: 1px solid var(--border-soft); border-radius: var(--radius-field);
+      background: var(--field-bg);
+    }
+    .schedule-option.selected { border-color: var(--ink); }
+    .schedule-name { font-size: 16px; color: var(--ink); }
+    .schedule-hint { font-size: 13px; color: var(--ink-mute); }
+    .date-row { margin-top: 12px; }
+    textarea.field { min-height: 110px; resize: vertical; line-height: 1.7; }
+    .summary-card { padding: 20px 24px; margin-top: 12px; }
+    .summary-line { font-size: 15px; color: var(--ink-soft); }
+    .summary-line + .summary-line { margin-top: 4px; }
+    .create-actions { margin-top: 40px; display: flex; align-items: center; gap: 16px; }
+    .field-hint { font-size: 13px; color: var(--ink-mute); margin-top: 6px; }
+    .seal-overlay {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 14px;
+      background: var(--paper); z-index: 10;
+      transition: opacity 500ms ease;
+    }
+    .seal-overlay h2 { font-size: 30px; }
+    .seal-overlay p { color: var(--ink-mute); font-size: 15px; }
+  </style>
+</head>
+<body hidden>
+  <header class="shell-header">
+    <a class="wordmark" href="./capsules.html">Arkive</a>
+    <nav class="shell-nav" aria-label="Primary">
+      <a href="./capsules.html" aria-current="page">Capsules</a>
+      <a href="./people.html">People</a>
+      <a href="./settings.html">Settings</a>
+    </nav>
+    <div class="shell-account">
+      <span data-account-name></span>
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="shell-main create-main">
+    <a class="back-link" id="back-link" href="./create-2.html" style="font-size:14px;color:var(--ink-soft)">← Back</a>
+    <span class="micro-label step-label">New capsule · Step 3 of 3</span>
+    <h1 class="step-title">When should it open?</h1>
+
+    <div class="form-section">
+      <div class="card summary-card">
+        <p class="summary-line" id="summary-title"></p>
+        <p class="summary-line" id="summary-recipient"></p>
+        <p class="summary-line" id="summary-contents"></p>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <span class="field-label">Delivery</span>
+      <div class="schedule-list" id="schedule-list">
+        <label class="schedule-option" data-mode="date">
+          <input type="radio" name="schedule" value="date">
+          <span><span class="schedule-name">On a date</span><br>
+          <span class="schedule-hint" id="date-hint">It opens for them on the day you choose.</span></span>
+        </label>
+        <label class="schedule-option" data-mode="now">
+          <input type="radio" name="schedule" value="now">
+          <span><span class="schedule-name">Send now</span><br>
+          <span class="schedule-hint">Sealed and delivered right away.</span></span>
+        </label>
+        <label class="schedule-option" data-mode="manual">
+          <input type="radio" name="schedule" value="manual">
+          <span><span class="schedule-name">I’ll deliver it myself</span><br>
+          <span class="schedule-hint">It waits, sealed, until you release it.</span></span>
+        </label>
+      </div>
+      <div class="date-row" id="date-row" hidden>
+        <label class="field-label" for="release-date">Opening day</label>
+        <input class="field" id="release-date" type="date">
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label class="field-label" for="reveal-message">A few words for the moment it opens (optional)</label>
+      <textarea class="field" id="reveal-message" spellcheck="true"></textarea>
+    </div>
+
+    <p class="error-text" id="error" role="alert" aria-live="polite"></p>
+    <div class="create-actions">
+      <button class="btn btn-primary" id="seal" type="button">Seal Capsule</button>
+      <span class="field-hint" id="busy" hidden>Sealing…</span>
+    </div>
+  </main>
+
+  <div class="seal-overlay" id="seal-overlay" hidden>
+    <span class="micro-label">Arkive</span>
+    <h2 id="overlay-title">Sealed.</h2>
+    <p id="overlay-sub">Kept until its moment comes.</p>
+  </div>
+
+  <script type="module">
+    import {
+      bootSession, wireShell, supabase, fetchCapsuleById, ArkiveItemsCodec,
+      ArkiveCapsuleWriter, ArkiveDeliveryEngine, sealGate, countOwnSealedCapsules,
+      DELIVERY_TYPE, ITEM_KIND, fmtMedium, isComped,
+    } from "./assets/arkive.js?v=ws5";
+
+    const boot = await bootSession();
+    wireShell(boot);
+    const userId = boot.user.id;
+
+    const params = new URLSearchParams(location.search);
+    const draftId = params.get("id");
+    if (!draftId) location.replace("./create-1.html");
+    document.getElementById("back-link").href = `./create-2.html?id=${encodeURIComponent(draftId)}`;
+
+    const row = await fetchCapsuleById(draftId);
+    if (!row) { location.replace("./create-1.html"); throw new Error("draft missing"); }
+    const draft = {
+      id: row.id, title: row.title ?? "", items: ArkiveItemsCodec.decode(row.items_json),
+      coverStoragePath: row.cover_storage_path,
+      recipientProfileId: row.recipient_profile_id, recipientName: row.recipient_name,
+      recipientRelationship: row.recipient_relationship_snapshot,
+      recipientEmail: row.recipient_contact_hint, guestEmail: row.guest_delivery_email,
+      revealMessage: row.reveal_message, draftStep: 3,
+    };
+
+    // summary
+    const letters = draft.items.filter((i) => i.kind === ITEM_KIND.letter).length;
+    const moments = draft.items.length - letters;
+    document.getElementById("summary-title").textContent = `“${draft.title || "Untitled capsule"}”`;
+    document.getElementById("summary-recipient").textContent =
+      draft.recipientName ? `For ${draft.recipientName}` : (draft.guestEmail ? `For ${draft.guestEmail}` : "No recipient yet");
+    document.getElementById("summary-contents").textContent =
+      `${letters} ${letters === 1 ? "letter" : "letters"} · ${moments} ${moments === 1 ? "moment" : "moments"}`;
+    if (draft.revealMessage) document.getElementById("reveal-message").value = draft.revealMessage;
+    if (!isComped()) document.getElementById("date-hint").textContent = "It opens for them on the day you choose — within two years on the free plan.";
+
+    // schedule selection
+    let mode = null;
+    const dateRow = document.getElementById("date-row");
+    document.getElementById("schedule-list").addEventListener("change", (event) => {
+      const option = event.target.closest(".schedule-option");
+      if (!option) return;
+      mode = option.dataset.mode;
+      document.querySelectorAll(".schedule-option").forEach((o) => o.classList.toggle("selected", o === option));
+      dateRow.hidden = mode !== "date";
+    });
+    const dateField = document.getElementById("release-date");
+    dateField.min = new Date().toISOString().slice(0, 10);
+
+    const errorEl = document.getElementById("error");
+    document.getElementById("seal").addEventListener("click", async () => {
+      errorEl.textContent = "";
+      if (!draft.recipientName && !draft.guestEmail) { errorEl.textContent = "This capsule has no recipient — go back to step 1."; return; }
+      if (draft.items.length === 0) { errorEl.textContent = "The capsule is empty — go back and add a letter or a moment."; return; }
+      if (!mode) { errorEl.textContent = "Choose when it should open."; return; }
+
+      let deliveryType;
+      let releaseAtISO = null;
+      let releaseDate = null;
+      if (mode === "date") {
+        if (!dateField.value) { errorEl.textContent = "Pick the opening day."; return; }
+        releaseDate = new Date(`${dateField.value}T12:00:00`);
+        if (Number.isNaN(releaseDate.getTime())) { errorEl.textContent = "That date didn’t parse — pick it again."; return; }
+        releaseAtISO = releaseDate.toISOString();
+        deliveryType = DELIVERY_TYPE.specificDate;
+      } else if (mode === "now") {
+        releaseAtISO = new Date().toISOString();
+        deliveryType = DELIVERY_TYPE.specificDate;
+      } else {
+        deliveryType = DELIVERY_TYPE.manualDelivery;
+      }
+
+      const busy = document.getElementById("busy");
+      const sealBtn = document.getElementById("seal");
+      sealBtn.disabled = true;
+      busy.hidden = false;
+      try {
+        // freemium create-walls (client-authoritative; honest copy)
+        const sealedCount = await countOwnSealedCapsules(userId);
+        const gate = sealGate({ sealedCount, releaseDate });
+        if (!gate.allowed) { errorEl.textContent = gate.reason; return; }
+
+        draft.revealMessage = document.getElementById("reveal-message").value.trim() || null;
+        const senderProfileId = await ownProfileId();
+        const sealedRow = await ArkiveCapsuleWriter.seal(draft, userId, {
+          deliveryType, releaseAtISO,
+          senderDisplayName: boot.account?.display_name ?? null,
+          senderProfileId,
+        });
+
+        const overlay = document.getElementById("seal-overlay");
+        overlay.hidden = false;
+
+        // Send Now at-seal parity (#240): a due date delivers immediately.
+        if (releaseAtISO && new Date(releaseAtISO) <= new Date()) {
+          document.getElementById("overlay-sub").textContent = "Delivering…";
+          await ArkiveDeliveryEngine.deliver(sealedRow, userId);
+          document.getElementById("overlay-sub").textContent = "Delivered.";
+        }
+        setTimeout(() => location.assign(`./capsule.html?id=${encodeURIComponent(draftId)}`), 1400);
+      } catch (err) {
+        console.error("arkive: seal failed", err);
+        document.getElementById("seal-overlay").hidden = true;
+        errorEl.textContent = "The seal didn’t complete — nothing was lost. Check your connection and try again.";
+      } finally {
+        sealBtn.disabled = false;
+        busy.hidden = true;
+      }
+    });
+
+    async function ownProfileId() {
+      try {
+        const { data, error } = await supabase.from("people")
+          .select("id").eq("account_id", userId).eq("is_self", true).limit(1).maybeSingle();
+        if (error) throw error;
+        return data?.id ?? null;
+      } catch { return null; }
+    }
+  </script>
+</body>
+</html>

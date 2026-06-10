@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — Capsules</title>
-  <link rel="stylesheet" href="./assets/tokens.css">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws5">
   <style>
     .capsule-grid {
       display: grid;
@@ -144,7 +144,10 @@
   </header>
 
   <main class="shell-main">
-    <h1>Capsules</h1>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:20px">
+      <h1>Capsules</h1>
+      <a class="btn btn-primary" href="./create-1.html">Create Capsule</a>
+    </div>
 
     <div class="tabs" role="tablist" aria-label="Mailboxes">
       <button class="tab" id="tab-mine" role="tab" aria-selected="true" aria-controls="panel-mine" type="button">My Capsules</button>
@@ -185,8 +188,8 @@
     import {
       bootSession, wireShell, fetchCapsuleRows, splitMailboxes, sortOpeningSoon,
       capsulePrimaryDateLine, capsuleRoutingLine, capsuleContentSummary,
-      capsuleCoverUrl, capsuleHrefFor, STATUS,
-    } from "./assets/arkive.js";
+      capsuleCoverUrl, capsuleHrefFor, ArkiveDeliveryEngine, STATUS,
+    } from "./assets/arkive.js?v=ws5";
 
     // Tabs wire first (delegated) — interactivity never waits on the network.
     const tablist = document.querySelector(".tabs");
@@ -207,9 +210,9 @@
 
     const boot = await bootSession();
     wireShell(boot);
-    await loadAndRender(boot.user.id);
+    await loadAndRender(boot.user.id, { sweep: true });
 
-    async function loadAndRender(userId) {
+    async function loadAndRender(userId, { sweep = false } = {}) {
       loadingEl.hidden = false;
       errorEl.hidden = true;
       let rows;
@@ -222,6 +225,17 @@
         return;
       }
       loadingEl.hidden = true;
+
+      // Sender-side sweep (#237): deliver due capsules + reconcile the
+      // sender's "Opened" view from recipient twins, then render fresh.
+      if (sweep) {
+        try {
+          const changed = await ArkiveDeliveryEngine.runSenderSweep(userId, rows.outgoing);
+          if (changed > 0) return loadAndRender(userId, { sweep: false });
+        } catch (err) {
+          console.error("arkive: sender sweep failed (non-fatal)", err);
+        }
+      }
 
       const { drafts, mine, received, contributing } = splitMailboxes(rows);
 
@@ -255,7 +269,9 @@
       if (drafts.length === 0) { block.hidden = true; return; }
       block.hidden = false;
       for (const draft of drafts) {
-        const card = el("div", "card draft-card");
+        const card = el("a", "card draft-card");
+        card.href = `./create-${Math.min(Math.max(draft.draft_step ?? 1, 1), 3)}.html?id=${encodeURIComponent(draft.id)}`;
+        card.style.color = "inherit";
         card.appendChild(el("p", "draft-title", draft.title || "Untitled capsule"));
         card.appendChild(el("p", "draft-meta", draftMeta(draft)));
         card.appendChild(el("span", "draft-pill", "Draft"));
