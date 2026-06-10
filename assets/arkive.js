@@ -249,6 +249,160 @@ export function wireShell({ user, account }) {
 }
 
 /* ------------------------------------------------------------
+   Capsule read model (WS2) — mirrors ArkiveCapsulesStore.
+   ------------------------------------------------------------ */
+
+/** The canonical select list the iOS store uses (ArkiveCapsulesStore
+ *  canonicalCapsulesSelect) — keep web and iOS reading the same shape. */
+export const CAPSULES_SELECT = [
+  "id", "creator_user_id", "shared_capsule_id", "mailbox", "state", "status", "title",
+  "sender_display_name_snapshot", "recipient_name", "delivery_type", "delivery_rule",
+  "created_at", "sealed_at", "release_at", "opened_at", "recipient_age_target",
+  "cover_image_name", "is_cover_spatial", "cover_storage_path",
+  "cover_video_storage_path", "cover_video_thumbnail_path", "reveal_message",
+  "letter_count", "moment_count", "items_json", "sender_profile_id", "recipient_profile_id",
+  "recipient_relationship_snapshot", "recipient_account_id", "recipient_contact_hint",
+  "guest_delivery_email", "recipient_name_snapshot",
+  "recipient_delivery_email_snapshot", "recipient_avatar_snapshot_path",
+  "recipient_routing_state", "dispatch_state", "dispatch_method",
+  "delivery_prepared_at", "delivery_attempted_at", "delivery_completed_at",
+  "delivery_failure_reason", "delivery_destination", "direction", "last_modified_at",
+  "draft_step", "music_song_id", "music_song_title", "music_artist_name",
+  "music_artwork_url", "is_collaborative", "contributor_count", "recipient_dismissed_at",
+].join(", ");
+
+/** The two canonical mailbox queries + the contributor fetch, exactly as iOS
+ *  runs them (outgoing: creator + not-Received; incoming: recipient + Received;
+ *  contributing: Accepted memberships → capsule rows via RLS). */
+export async function fetchCapsuleRows(userId) {
+  const [outgoing, incoming, contributing] = await Promise.all([
+    supabase.from("capsules").select(CAPSULES_SELECT)
+      .eq("creator_user_id", userId).neq("mailbox", MAILBOX.received)
+      .order("created_at", { ascending: true }).limit(500),
+    supabase.from("capsules").select(CAPSULES_SELECT)
+      .eq("recipient_account_id", userId).eq("mailbox", MAILBOX.received)
+      .order("created_at", { ascending: true }).limit(500),
+    fetchContributingRows(userId),
+  ]);
+  if (outgoing.error) throw outgoing.error;
+  if (incoming.error) throw incoming.error;
+  return { outgoing: outgoing.data ?? [], incoming: incoming.data ?? [], contributing };
+}
+
+async function fetchContributingRows(userId) {
+  try {
+    const { data: memberships, error } = await supabase
+      .from("capsule_contributors").select("capsule_id")
+      .eq("user_id", userId).eq("status", CONTRIBUTOR_STATUS.accepted);
+    if (error) throw error;
+    const ids = (memberships ?? []).map((m) => m.capsule_id);
+    if (ids.length === 0) return [];
+    const { data, error: capsulesError } = await supabase
+      .from("capsules").select(CAPSULES_SELECT)
+      .in("id", ids).order("created_at", { ascending: true });
+    if (capsulesError) throw capsulesError;
+    return data ?? [];
+  } catch (err) {
+    console.error("arkive: contributing-capsules fetch failed (non-fatal)", err);
+    return [];
+  }
+}
+
+/** Client-side mailbox predicates (iOS CapsulesView/store parity):
+ *  drafts = status 'Draft'; received filters recipient soft-dismiss
+ *  (Decision #153); contributing = Accepted-membership rows not my own. */
+export function splitMailboxes({ outgoing, incoming, contributing }) {
+  const drafts = outgoing.filter((r) => r.status === STATUS.draft);
+  const mine = outgoing.filter((r) => r.status !== STATUS.draft);
+  const received = incoming.filter(
+    (r) => (r.direction === DIRECTION.received || r.mailbox === MAILBOX.received)
+      && r.recipient_dismissed_at == null,
+  );
+  const ownIds = new Set(outgoing.map((r) => r.id));
+  const contributingOnly = contributing.filter((r) => !ownIds.has(r.id));
+  return { drafts, mine, received, contributing: contributingOnly };
+}
+
+/** iOS default list order ("Opening Soon"): ascending by
+ *  release_at ?? sealed_at ?? created_at. */
+export function sortOpeningSoon(rows) {
+  const key = (r) => new Date(r.release_at ?? r.sealed_at ?? r.created_at).getTime();
+  return [...rows].sort((a, b) => key(a) - key(b));
+}
+
+export function fmtMedium(value) {
+  if (!value) return "";
+  return new Date(value).toLocaleDateString(undefined, { dateStyle: "medium" });
+}
+
+/* —— card copy, ported verbatim from CapsulesView.swift —— */
+
+export function capsulePrimaryDateLine(row) {
+  if (row.status === STATUS.opened && row.opened_at) return `Opened ${fmtMedium(row.opened_at)}`;
+  if (row.status === STATUS.delivered) {
+    if (row.delivery_completed_at) return `Delivered ${fmtMedium(row.delivery_completed_at)}`;
+    if (row.release_at) return `Delivered ${fmtMedium(row.release_at)}`;
+    return "Delivered";
+  }
+  switch (row.delivery_type) {
+    case DELIVERY_TYPE.specificDate:
+      return row.release_at ? `Opens ${fmtMedium(row.release_at)}` : "Specific date";
+    case DELIVERY_TYPE.ageMilestone:
+      if (row.recipient_age_target != null && row.release_at) {
+        return `Opens at ${row.recipient_age_target} · ${fmtMedium(row.release_at)}`;
+      }
+      if (row.recipient_age_target != null) return `Opens at ${row.recipient_age_target}`;
+      return "Age milestone";
+    case DELIVERY_TYPE.whenTheyJoinArkive: return "Opens when they join Arkive";
+    case DELIVERY_TYPE.manualDelivery: return "Manual delivery";
+    case DELIVERY_TYPE.openEnded: return "Open-Ended";
+    default: return "";
+  }
+}
+
+export function capsuleRoutingLine(row) {
+  if (row.status === STATUS.opened) return "";
+  if (row.status === STATUS.delivered) {
+    return row.direction === DIRECTION.received ? "Awaiting open" : "Delivered to recipient";
+  }
+  switch (row.delivery_type) {
+    case DELIVERY_TYPE.whenTheyJoinArkive:
+      return row.dispatch_state === DISPATCH_STATE.sent ? "Release condition met" : "Waiting for Arkive account";
+    case DELIVERY_TYPE.specificDate:
+    case DELIVERY_TYPE.ageMilestone:
+      return "Scheduled for future release";
+    case DELIVERY_TYPE.manualDelivery:
+    case DELIVERY_TYPE.openEnded:
+      return row.dispatch_state === DISPATCH_STATE.manual ? "Manually released" : "Manual release required";
+    default: return "";
+  }
+}
+
+export function capsuleContentSummary(row) {
+  const lc = row.letter_count ?? 0;
+  const mc = row.moment_count ?? 0;
+  const letters = `${lc} ${lc === 1 ? "letter" : "letters"}`;
+  const moments = `${mc} ${mc === 1 ? "moment" : "moments"}`;
+  if (lc > 0 && mc > 0) return `${letters} • ${moments}`;
+  if (mc > 0) return moments;
+  return letters;
+}
+
+/** WS2 static cover: cover-video poster wins, then cover photo, else null
+ *  (caller renders the monogram placeholder). */
+export async function capsuleCoverUrl(row) {
+  if (row.cover_video_thumbnail_path) {
+    const url = await ArkiveStorageHelpers.download(BUCKET.capsuleCovers, row.cover_video_thumbnail_path);
+    if (url) return url;
+  }
+  if (row.cover_storage_path) {
+    const url = await ArkiveStorageHelpers.download(BUCKET.photos, row.cover_storage_path);
+    if (url) return url;
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------
    Placeholder modules — contracts documented in the Phase 0
    recon report; implementations land in later workstreams.
    ------------------------------------------------------------ */
@@ -265,17 +419,34 @@ export const ArkiveItemsCodec = {
   encode() { throw new Error("ArkiveItemsCodec.encode arrives in WS3"); },
 };
 
-/** TODO(WS3) — storage helpers.
- *  Path templates (uid lowercase, always): moments-media
+/** Storage helpers. download() is live (WS2 — covers); signed-URL video
+ *  streaming lands in WS3 (Decision #237).
+ *  Upload path templates for WS5 (uid lowercase, always): moments-media
  *  `{uid}/photos/{ts}_{suffix}.jpg` · arkive-videos `{uid}/videos/{ts}_{suffix}.mp4`
  *  · arkive-audio `{uid}/audio/{momentID}.m4a` · covers
  *  `{uid}/covers/{capsuleID}.jpg` (arkive-photos) · cover video
- *  `{uid}/{capsuleID}/video.mp4` + `poster.jpg` (arkive-capsule-covers).
- *  Downloads via authenticated download(); video playback via
- *  short-TTL signed URLs (Decision #237). */
+ *  `{uid}/{capsuleID}/video.mp4` + `poster.jpg` (arkive-capsule-covers). */
+const objectUrlCache = new Map();
+
 export const ArkiveStorageHelpers = {
-  download() { throw new Error("ArkiveStorageHelpers arrives in WS3"); },
-  signedVideoUrl() { throw new Error("ArkiveStorageHelpers arrives in WS3"); },
+  /** Authenticated download → object URL (cached per bucket/path).
+   *  Returns null on miss/denial — callers render their fallback. */
+  async download(bucket, path) {
+    if (!path) return null;
+    const key = `${bucket}/${path}`;
+    if (objectUrlCache.has(key)) return objectUrlCache.get(key);
+    try {
+      const { data, error } = await supabase.storage.from(bucket).download(path);
+      if (error) throw error;
+      const url = URL.createObjectURL(data);
+      objectUrlCache.set(key, url);
+      return url;
+    } catch (err) {
+      console.warn(`arkive: storage download miss ${key}`, err?.message ?? err);
+      return null;
+    }
+  },
+  signedVideoUrl() { throw new Error("ArkiveStorageHelpers.signedVideoUrl arrives in WS3"); },
 };
 
 /** TODO(WS5) — delivery engine.

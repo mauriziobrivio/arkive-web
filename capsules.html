@@ -5,6 +5,123 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — Capsules</title>
   <link rel="stylesheet" href="./assets/tokens.css">
+  <style>
+    .capsule-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+      gap: 24px;
+      margin-top: 28px;
+    }
+    .capsule-card {
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .capsule-cover {
+      position: relative;
+      aspect-ratio: 4 / 3;
+      background: rgba(20, 17, 14, 0.05);
+      overflow: hidden;
+    }
+    .capsule-cover img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .capsule-monogram {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 44px;
+      color: var(--bronze);
+      opacity: 0.55;
+    }
+    .status-pill {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      padding: 4px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.78);
+      color: var(--ink);
+      border: 1px solid var(--border-soft);
+    }
+    .status-pill.opened {
+      background: rgba(242, 206, 150, 0.55);
+    }
+    .contributing-tag {
+      position: absolute;
+      top: 14px;
+      left: 12px;
+      font-size: 10px;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+      color: var(--bronze);
+      background: rgba(255, 255, 255, 0.78);
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-soft);
+    }
+    .capsule-body { padding: 16px 18px 18px; }
+    .capsule-title {
+      font-size: 19px;
+      line-height: 1.3;
+      color: var(--ink);
+    }
+    .capsule-person {
+      font-size: 14px;
+      color: var(--ink-soft);
+      margin-top: 3px;
+    }
+    .capsule-dateline {
+      font-size: 14px;
+      color: var(--ink);
+      margin-top: 10px;
+    }
+    .capsule-subline {
+      font-size: 13px;
+      color: var(--ink-mute);
+      margin-top: 2px;
+      min-height: 1.2em;
+    }
+    .capsule-summary {
+      font-size: 12.5px;
+      color: var(--ink-mute);
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-soft);
+    }
+    /* drafts strip */
+    .drafts-block { margin-top: 28px; }
+    .drafts-row {
+      display: flex;
+      gap: 14px;
+      overflow-x: auto;
+      padding: 12px 2px 6px;
+    }
+    .draft-card {
+      flex: 0 0 220px;
+      padding: 14px 16px;
+    }
+    .draft-title { font-size: 16px; color: var(--ink); }
+    .draft-meta { font-size: 12.5px; color: var(--ink-mute); margin-top: 6px; }
+    .draft-pill {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      padding: 2px 10px;
+      border-radius: 999px;
+      background: rgba(138, 106, 60, 0.16);
+      color: var(--ink-soft);
+      margin-top: 10px;
+    }
+    .section-gap { margin-top: 8px; }
+  </style>
 </head>
 <body hidden>
   <header class="shell-header">
@@ -28,23 +145,42 @@
       <button class="tab" id="tab-received" role="tab" aria-selected="false" aria-controls="panel-received" type="button">Received</button>
     </div>
 
-    <section id="panel-mine" role="tabpanel" aria-labelledby="tab-mine">
-      <div class="empty-state">
+    <div class="empty-state" id="capsules-loading">
+      <p class="empty-title">Gathering your capsules…</p>
+    </div>
+
+    <div class="empty-state" id="capsules-error" hidden>
+      <p class="empty-title">Your capsules couldn’t be loaded.</p>
+      <p class="empty-hint">Check your connection, then try again.</p>
+      <p class="section-gap"><button class="btn btn-quiet" id="retry-load" type="button">Try Again</button></p>
+    </div>
+
+    <section id="panel-mine" role="tabpanel" aria-labelledby="tab-mine" hidden>
+      <div class="drafts-block" id="drafts-block" hidden>
+        <p class="micro-label">Drafts</p>
+        <div class="drafts-row" id="drafts-row"></div>
+      </div>
+      <div class="capsule-grid" id="grid-mine"></div>
+      <div class="empty-state" id="empty-mine" hidden>
         <p class="empty-title">The capsules you create and seal will live here.</p>
-        <p class="empty-hint">Capsule lists arrive in the next build.</p>
+        <p class="empty-hint">Create and seal capsules in the Arkive app — they’ll appear here.</p>
       </div>
     </section>
 
     <section id="panel-received" role="tabpanel" aria-labelledby="tab-received" hidden>
-      <div class="empty-state">
+      <div class="capsule-grid" id="grid-received"></div>
+      <div class="empty-state" id="empty-received" hidden>
         <p class="empty-title">Capsules sent to you will arrive here.</p>
-        <p class="empty-hint">Capsule lists arrive in the next build.</p>
       </div>
     </section>
   </main>
 
   <script type="module">
-    import { bootSession, wireShell } from "./assets/arkive.js";
+    import {
+      bootSession, wireShell, fetchCapsuleRows, splitMailboxes, sortOpeningSoon,
+      capsulePrimaryDateLine, capsuleRoutingLine, capsuleContentSummary,
+      capsuleCoverUrl, STATUS,
+    } from "./assets/arkive.js";
 
     // Tabs wire first (delegated) — interactivity never waits on the network.
     const tablist = document.querySelector(".tabs");
@@ -59,8 +195,123 @@
       }
     });
 
+    const loadingEl = document.getElementById("capsules-loading");
+    const errorEl = document.getElementById("capsules-error");
+    document.getElementById("retry-load").addEventListener("click", () => window.location.reload());
+
     const boot = await bootSession();
     wireShell(boot);
+    await loadAndRender(boot.user.id);
+
+    async function loadAndRender(userId) {
+      loadingEl.hidden = false;
+      errorEl.hidden = true;
+      let rows;
+      try {
+        rows = await fetchCapsuleRows(userId);
+      } catch (err) {
+        console.error("arkive: capsule fetch failed", err);
+        loadingEl.hidden = true;
+        errorEl.hidden = false;
+        return;
+      }
+      loadingEl.hidden = true;
+
+      const { drafts, mine, received, contributing } = splitMailboxes(rows);
+
+      renderDrafts(sortOpeningSoon(drafts));
+      renderGrid(
+        document.getElementById("grid-mine"),
+        document.getElementById("empty-mine"),
+        [...sortOpeningSoon(mine), ...sortOpeningSoon(contributing)],
+        { contributingIds: new Set(contributing.map((r) => r.id)), personPrefix: "For" },
+      );
+      renderGrid(
+        document.getElementById("grid-received"),
+        document.getElementById("empty-received"),
+        sortOpeningSoon(received),
+        { contributingIds: new Set(), personPrefix: "From" },
+      );
+
+      // Drafts count toward "anything to show" on the mine panel.
+      if (drafts.length > 0) document.getElementById("empty-mine").hidden = true;
+      // Reveal the active panel now that content exists.
+      document.getElementById("panel-mine").hidden =
+        document.getElementById("tab-mine").getAttribute("aria-selected") !== "true";
+      document.getElementById("panel-received").hidden =
+        document.getElementById("tab-received").getAttribute("aria-selected") !== "true";
+    }
+
+    function renderDrafts(drafts) {
+      const block = document.getElementById("drafts-block");
+      const row = document.getElementById("drafts-row");
+      row.textContent = "";
+      if (drafts.length === 0) { block.hidden = true; return; }
+      block.hidden = false;
+      for (const draft of drafts) {
+        const card = el("div", "card draft-card");
+        card.appendChild(el("p", "draft-title", draft.title || "Untitled capsule"));
+        card.appendChild(el("p", "draft-meta", draftMeta(draft)));
+        card.appendChild(el("span", "draft-pill", "Draft"));
+        row.appendChild(card);
+      }
+    }
+
+    function draftMeta(draft) {
+      const person = draft.recipient_name || draft.recipient_name_snapshot;
+      const summary = capsuleContentSummary(draft);
+      return person ? `For ${person} · ${summary}` : summary;
+    }
+
+    function renderGrid(grid, emptyEl, rows, { contributingIds, personPrefix }) {
+      grid.textContent = "";
+      emptyEl.hidden = rows.length > 0;
+      for (const row of rows) {
+        grid.appendChild(capsuleCard(row, { contributing: contributingIds.has(row.id), personPrefix }));
+      }
+    }
+
+    function capsuleCard(row, { contributing, personPrefix }) {
+      const card = el("article", "card capsule-card");
+
+      const cover = el("div", "capsule-cover");
+      const monogram = el("div", "capsule-monogram", (row.title || "A").trim().charAt(0).toUpperCase());
+      cover.appendChild(monogram);
+      const pill = el("span", `status-pill${row.status === STATUS.opened ? " opened" : ""}`, row.status ?? "");
+      cover.appendChild(pill);
+      if (contributing) cover.appendChild(el("span", "contributing-tag", "Contributing"));
+      card.appendChild(cover);
+
+      // covers resolve asynchronously; the monogram holds the frame meanwhile
+      capsuleCoverUrl(row).then((url) => {
+        if (!url) return;
+        const img = document.createElement("img");
+        img.alt = "";
+        img.src = url;
+        cover.insertBefore(img, monogram);
+        monogram.remove();
+      });
+
+      const body = el("div", "capsule-body");
+      body.appendChild(el("h2", "capsule-title", row.title || "Untitled capsule"));
+      const person = personPrefix === "From"
+        ? (row.sender_display_name_snapshot || "")
+        : (row.recipient_name || row.recipient_name_snapshot || "");
+      if (person) body.appendChild(el("p", "capsule-person", `${personPrefix} ${person}`));
+      body.appendChild(el("p", "capsule-dateline", capsulePrimaryDateLine(row)));
+      const subline = capsuleRoutingLine(row);
+      if (subline) body.appendChild(el("p", "capsule-subline", subline));
+      body.appendChild(el("p", "capsule-summary", capsuleContentSummary(row)));
+      card.appendChild(body);
+      return card;
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    }
   </script>
 </body>
 </html>
