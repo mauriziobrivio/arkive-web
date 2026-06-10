@@ -46,22 +46,21 @@
   <script type="module">
     import { bootSession, wireShell } from "./assets/arkive.js";
 
+    // Tabs wire first (delegated) — interactivity never waits on the network.
+    const tablist = document.querySelector(".tabs");
+    const tabs = Array.from(tablist.querySelectorAll(".tab"));
+    tablist.addEventListener("click", (event) => {
+      const tab = event.target.closest(".tab");
+      if (!tab) return;
+      for (const other of tabs) {
+        const selected = other === tab;
+        other.setAttribute("aria-selected", String(selected));
+        document.getElementById(other.getAttribute("aria-controls")).hidden = !selected;
+      }
+    });
+
     const boot = await bootSession();
     wireShell(boot);
-
-    const tabs = [
-      { tab: document.getElementById("tab-mine"), panel: document.getElementById("panel-mine") },
-      { tab: document.getElementById("tab-received"), panel: document.getElementById("panel-received") },
-    ];
-    for (const { tab } of tabs) {
-      tab.addEventListener("click", () => {
-        for (const entry of tabs) {
-          const selected = entry.tab === tab;
-          entry.tab.setAttribute("aria-selected", String(selected));
-          entry.panel.hidden = !selected;
-        }
-      });
-    }
   </script>
 </body>
 </html>
