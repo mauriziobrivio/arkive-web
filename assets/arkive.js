@@ -1102,13 +1102,5 @@ export const ArkiveDeliveryEngine = {
   },
 };
 
-/** TODO(WS5) — delivery engine.
- *  Sender-side sweep (web runs it per Decision #237) + Deliver Now:
- *  sender row UPDATE (full delivery field set) → Received row INSERT
- *  (new UUID; mirror trigger backfills; 23505 = no-op) → invoke
- *  send-capsule-emails {capsule_id}, parse {success} strictly.
- *  email_notification_sent is server-set — never write it. */
-export const ArkiveDeliveryEngine = {
-  runSenderSweep() { throw new Error("ArkiveDeliveryEngine arrives in WS5"); },
-  deliverNow() { throw new Error("ArkiveDeliveryEngine arrives in WS5"); },
-};
+/* (WS5 filled the former ArkiveDeliveryEngine placeholder — the live
+   engine now lives in the WS5 section above.) */
