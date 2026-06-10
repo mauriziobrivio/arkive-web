@@ -1,0 +1,265 @@
+/* ============================================================
+   ARKIVE Web Companion — design tokens + base primitives
+   Palette: Liza palette, Decision #204 (matches the shipped app,
+   TestFlight 110/111 — the cohesion bar).
+   Rules: ALL text is serif. Antique Bronze is an accent (≤5% of
+   any screen): micro-labels, underlines, fine rules — never large
+   surfaces, never buttons.
+   ============================================================ */
+
+:root {
+  /* —— Decision #204 palette, verbatim —— */
+  --paper:    #ECE9E2;  /* app background */
+  --card:     #E3DFD4;  /* card surface */
+  --ink:      #14110E;  /* primary text, primary buttons */
+  --ink-soft: #595652;  /* secondary text */
+  --ink-mute: #807A70;  /* timestamps, hints, placeholders */
+  --bronze:   #8A6A3C;  /* antique bronze — accents only */
+  --border-strong: rgba(20, 17, 14, 0.16);
+  --border-soft:   rgba(20, 17, 14, 0.08);
+
+  /* destructive is not part of #204 — carried from the shipped
+     app's palette (arkiveDestructive #AA3C37) for error states */
+  --destructive: #AA3C37;
+
+  /* field surface: shipped-app pattern (white 0.75 on warm paper) */
+  --field-bg: rgba(255, 255, 255, 0.75);
+
+  /* —— type —— */
+  /* ui-serif resolves to New York on Apple platforms — closest
+     web match to the app's .design(.serif) */
+  --font-serif: ui-serif, "Iowan Old Style", "Palatino Linotype",
+                Palatino, Georgia, "Times New Roman", serif;
+
+  /* —— radii (shipped-app patterns) —— */
+  --radius-card: 20px;
+  --radius-field: 14px;
+  --radius-button: 12px;
+}
+
+/* ---------- base ---------- */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  margin: 0;
+}
+
+/* step-title scale, per the app's 32pt medium serif */
+h1 { font-size: 32px; line-height: 1.2; }
+h2 { font-size: 22px; line-height: 1.3; }
+
+p { margin: 0; }
+
+a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+/* ---------- micro-label (bronze, letterspaced caps) ---------- */
+
+.micro-label {
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--bronze);
+}
+
+/* ---------- wordmark ---------- */
+
+.wordmark {
+  font-size: 15px;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: var(--bronze);
+  font-weight: 400;
+}
+
+/* ---------- cards ---------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+}
+
+/* ---------- buttons ---------- */
+
+.btn {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  border-radius: var(--radius-button);
+  padding: 13px 26px;
+  cursor: pointer;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+}
+
+.btn-primary:hover { background: #2a2620; }
+
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn-quiet {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+}
+
+.btn-quiet:hover { background: rgba(20, 17, 14, 0.04); }
+
+/* ---------- form fields ---------- */
+
+.field-label {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: 0 0 6px 2px;
+}
+
+.field {
+  width: 100%;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--field-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-field);
+  padding: 12px 14px;
+  outline: none;
+}
+
+.field::placeholder { color: var(--ink-mute); }
+
+.field:focus { border-color: var(--ink); }
+
+/* ---------- error text ---------- */
+
+.error-text {
+  color: var(--destructive);
+  font-size: 14px;
+  min-height: 1.4em;
+}
+
+/* ---------- signed-in shell ---------- */
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 36px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.shell-nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.shell-nav a {
+  font-size: 16px;
+  color: var(--ink-soft);
+  padding-bottom: 2px;
+}
+
+.shell-nav a:hover { color: var(--ink); }
+
+.shell-nav a[aria-current="page"] {
+  color: var(--ink);
+  border-bottom: 2px solid var(--bronze);
+}
+
+.shell-account {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 14px;
+  color: var(--ink-mute);
+}
+
+.shell-main {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 48px 36px 96px;
+}
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 26px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-top: 28px;
+}
+
+.tab {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-mute);
+  padding: 8px 2px 10px;
+  cursor: pointer;
+}
+
+.tab:hover { color: var(--ink-soft); }
+
+.tab[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--bronze);
+}
+
+/* ---------- empty states ---------- */
+
+.empty-state {
+  text-align: center;
+  padding: 96px 24px;
+}
+
+.empty-state .empty-title {
+  font-size: 20px;
+  color: var(--ink-soft);
+}
+
+.empty-state .empty-hint {
+  font-size: 14px;
+  color: var(--ink-mute);
+  margin-top: 10px;
+}
+
+/* ---------- motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
