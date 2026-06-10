@@ -1,0 +1,290 @@
+/* ============================================================
+   ARKIVE Web Companion — shared client module (WS1)
+
+   Supabase client + per-page auth guard + boot sequence +
+   canonical backend constants (Phase 0 recon, adopted as spec
+   by Decision #237). Placeholder modules at the bottom are
+   filled in WS3 (items/media) and WS5 (delivery).
+
+   The publishable key below is public-by-design — RLS is the
+   security boundary, same as the iOS app. Service-role keys
+   must never appear anywhere in this repo.
+   ============================================================ */
+
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+export const SUPABASE_URL = "https://skrwdjxgvryodsxusqia.supabase.co";
+export const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_HfoE9g7rCsCTem3gas_CkA_fu31WK3W";
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+/* ------------------------------------------------------------
+   Canonical backend string values (Phase 0 §R2 — exact case is
+   load-bearing; three iOS bugs shipped from case mismatches).
+   ------------------------------------------------------------ */
+
+export const MAILBOX = Object.freeze({
+  myCapsules: "My Capsules",
+  received: "Received",
+});
+
+export const STATUS = Object.freeze({
+  draft: "Draft",
+  scheduled: "Scheduled",
+  delivered: "Delivered",
+  opened: "Opened",
+});
+
+export const STATE = Object.freeze({
+  draft: "draft",
+  sealed: "sealed",
+  delivered: "delivered",
+  opened: "opened",
+});
+
+export const DIRECTION = Object.freeze({
+  sent: "Sent",
+  received: "Received",
+});
+
+export const DELIVERY_TYPE = Object.freeze({
+  specificDate: "Specific Date",
+  ageMilestone: "Age Milestone",
+  whenTheyJoinArkive: "When They Join Arkive",
+  manualDelivery: "Manual Delivery",
+  openEnded: "Open-Ended",
+});
+
+export const DELIVERY_RULE = Object.freeze({
+  date: "date",
+  manual: "manual",
+  onJoin: "on_join",
+  openEnded: "open_ended",
+});
+
+export const DISPATCH_STATE = Object.freeze({
+  pending: "Pending",
+  ready: "Ready",
+  sent: "Sent",
+  failed: "Failed", // written by the Edge Function on send failure; manual retry only
+  manual: "Manual",
+});
+
+export const DISPATCH_METHOD = Object.freeze({
+  email: "Email",
+  inApp: "In-App",
+  manual: "Manual",
+});
+
+export const RECIPIENT_ROUTING_STATE = Object.freeze({
+  localProfileOnly: "Local Profile Only",
+  awaitingRecipientAccount: "Awaiting Recipient Account",
+  linkedToRecipientAccount: "Linked To Recipient Account",
+  routedToRecipientInbox: "Routed To Recipient Inbox",
+});
+
+export const CONTRIBUTOR_STATUS = Object.freeze({
+  invited: "Invited",
+  accepted: "Accepted",
+  declined: "Declined",
+  removed: "Removed",
+});
+
+export const CONTRIBUTOR_ROLE = Object.freeze({
+  contributor: "Contributor",
+});
+
+export const ITEM_KIND = Object.freeze({
+  photo: "Photo",
+  video: "Video",
+  audio: "Audio",
+  letter: "Letter",
+  textNote: "Text Note", // legacy render-only (Decision #229) — never write
+  quickMoment: "Quick Moment",
+});
+
+export const BUCKET = Object.freeze({
+  momentsMedia: "moments-media",        // inline capsule photos (primary)
+  photos: "arkive-photos",              // covers ({uid}/covers/), avatars, legacy photos
+  videos: "arkive-videos",              // item videos (mp4/quicktime only)
+  audio: "arkive-audio",                // item audio (m4a)
+  capsuleCovers: "arkive-capsule-covers", // cover video + poster
+  profileSnapshots: "arkive-profile-snapshots",
+});
+
+/* ------------------------------------------------------------
+   Freemium gate (Decision #237: is_comped + Free walls;
+   web sells nothing).
+   ------------------------------------------------------------ */
+
+export const FREE_LIMITS = Object.freeze({
+  maxSealedCapsules: 1,
+  maxRevealHorizonYears: 2,
+  maxNamedBeneficiaries: 0,
+});
+
+export const GATE_COPY = "Manage your plan in the Arkive app.";
+
+const ENTITLEMENT_KEY = "arkive.isComped";
+
+export function isComped() {
+  return sessionStorage.getItem(ENTITLEMENT_KEY) === "true";
+}
+
+/* ------------------------------------------------------------
+   Auth guard — every signed-in page calls requireSession() (or
+   bootSession()) as its first act; index.html calls
+   redirectIfSignedIn() instead.
+   ------------------------------------------------------------ */
+
+export async function requireSession() {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    window.location.replace("./index.html");
+    throw new Error("arkive: no session — redirecting to sign-in");
+  }
+  // Sign-out in this or another tab bounces every page to login.
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === "SIGNED_OUT") window.location.replace("./index.html");
+  });
+  document.body.removeAttribute("hidden");
+  return session;
+}
+
+export async function redirectIfSignedIn() {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session) window.location.replace("./capsules.html");
+}
+
+export async function signOutAndRedirect() {
+  try {
+    await supabase.auth.signOut();
+  } catch (err) {
+    console.error("arkive: signOut failed", err);
+  } finally {
+    sessionStorage.removeItem(ENTITLEMENT_KEY);
+    window.location.replace("./index.html");
+  }
+}
+
+/* ------------------------------------------------------------
+   Boot sequence (Phase 0 §R1 minimal boot, iOS parity):
+   1. accounts row read (insert-if-missing, email-drift update)
+   2. claim_my_pending_invitations() RPC (idempotent)
+   3. stash entitlement (is_comped) for the gate helpers
+   ------------------------------------------------------------ */
+
+export async function bootSession() {
+  const session = await requireSession();
+  const account = await ensureAccount(session.user);
+  await claimPendingInvitations();
+  sessionStorage.setItem(ENTITLEMENT_KEY, String(account?.is_comped === true));
+  return { session, user: session.user, account };
+}
+
+/** Mirrors iOS ensureAccountAndFetchDisplayName (ARKIVEApp.swift):
+ *  select own accounts row; insert if missing; update email if it
+ *  drifted. Never writes is_comped (server-protected column). */
+async function ensureAccount(user) {
+  try {
+    const { data: row, error } = await supabase
+      .from("accounts")
+      .select("id, display_name, email, is_comped")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (error) throw error;
+
+    if (!row) {
+      // Normally created by the signup trigger; belt-and-suspenders parity.
+      const displayName = (user.email ?? "").split("@")[0] || "You";
+      const { data: inserted, error: insertError } = await supabase
+        .from("accounts")
+        .insert({ id: user.id, email: user.email, display_name: displayName })
+        .select("id, display_name, email, is_comped")
+        .single();
+      if (insertError) throw insertError;
+      return inserted;
+    }
+
+    if (user.email && row.email !== user.email) {
+      await supabase.from("accounts").update({ email: user.email }).eq("id", user.id);
+      row.email = user.email;
+    }
+    return row;
+  } catch (err) {
+    console.error("arkive: ensureAccount failed (continuing with session identity)", err);
+    return null;
+  }
+}
+
+/** SECURITY DEFINER RPC; claims 'Invited' contributor rows for the
+ *  caller's email. Idempotent; failures are non-fatal at boot. */
+async function claimPendingInvitations() {
+  try {
+    const { data, error } = await supabase.rpc("claim_my_pending_invitations");
+    if (error) throw error;
+    if (Array.isArray(data) && data.length > 0) {
+      console.info(`arkive: claimed ${data.length} pending contributor invitation(s)`);
+    }
+  } catch (err) {
+    console.error("arkive: claim_my_pending_invitations failed (non-fatal)", err);
+  }
+}
+
+/* ------------------------------------------------------------
+   Shell chrome wiring for signed-in pages.
+   ------------------------------------------------------------ */
+
+export function wireShell({ user, account }) {
+  const name = account?.display_name || user?.email || "";
+  document.querySelectorAll("[data-account-name]").forEach((el) => {
+    el.textContent = name;
+  });
+  document.querySelectorAll("[data-account-email]").forEach((el) => {
+    el.textContent = user?.email ?? "";
+  });
+  document.querySelectorAll("[data-sign-out]").forEach((el) => {
+    el.addEventListener("click", () => signOutAndRedirect());
+  });
+}
+
+/* ------------------------------------------------------------
+   Placeholder modules — contracts documented in the Phase 0
+   recon report; implementations land in later workstreams.
+   ------------------------------------------------------------ */
+
+/** TODO(WS3) — items_json codec.
+ *  Read precedence per item: image_storage_path → photoStoragePath →
+ *  inline photoData (legacy base64) · videoStoragePath (videoFileName-only
+ *  items are unrecoverable → dignified fallback) · audioStoragePath ·
+ *  Letter body = subtitle (plaintext). Photo items WRITE BOTH
+ *  photoStoragePath and image_storage_path. Keys are load-bearing in
+ *  storage RLS — never reshape/rename. Strip photoData before writes. */
+export const ArkiveItemsCodec = {
+  decode() { throw new Error("ArkiveItemsCodec.decode arrives in WS3"); },
+  encode() { throw new Error("ArkiveItemsCodec.encode arrives in WS3"); },
+};
+
+/** TODO(WS3) — storage helpers.
+ *  Path templates (uid lowercase, always): moments-media
+ *  `{uid}/photos/{ts}_{suffix}.jpg` · arkive-videos `{uid}/videos/{ts}_{suffix}.mp4`
+ *  · arkive-audio `{uid}/audio/{momentID}.m4a` · covers
+ *  `{uid}/covers/{capsuleID}.jpg` (arkive-photos) · cover video
+ *  `{uid}/{capsuleID}/video.mp4` + `poster.jpg` (arkive-capsule-covers).
+ *  Downloads via authenticated download(); video playback via
+ *  short-TTL signed URLs (Decision #237). */
+export const ArkiveStorageHelpers = {
+  download() { throw new Error("ArkiveStorageHelpers arrives in WS3"); },
+  signedVideoUrl() { throw new Error("ArkiveStorageHelpers arrives in WS3"); },
+};
+
+/** TODO(WS5) — delivery engine.
+ *  Sender-side sweep (web runs it per Decision #237) + Deliver Now:
+ *  sender row UPDATE (full delivery field set) → Received row INSERT
+ *  (new UUID; mirror trigger backfills; 23505 = no-op) → invoke
+ *  send-capsule-emails {capsule_id}, parse {success} strictly.
+ *  email_notification_sent is server-set — never write it. */
+export const ArkiveDeliveryEngine = {
+  runSenderSweep() { throw new Error("ArkiveDeliveryEngine arrives in WS5"); },
+  deliverNow() { throw new Error("ArkiveDeliveryEngine arrives in WS5"); },
+};
