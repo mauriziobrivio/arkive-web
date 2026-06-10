@@ -198,7 +198,7 @@
       document.getElementById("sealed-from").textContent = sender ? `From ${sender}` : "For you";
       document.getElementById("sealed-title").textContent = row.title || "A capsule";
       if (row.sealed_at) {
-        document.getElementById("sealed-date").textContent = `Sealed ${fmtMedium(row.sealed_at)} — opened today, by you.`;
+        document.getElementById("sealed-date").textContent = `Sealed ${fmtMedium(row.sealed_at)} — waiting for you.`;
       }
 
       const unsealBtn = document.getElementById("unseal");
