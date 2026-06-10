@@ -16,6 +16,12 @@
       overflow: hidden;
       display: flex;
       flex-direction: column;
+      color: inherit;
+      transition: transform 140ms ease, border-color 140ms ease;
+    }
+    a.capsule-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-strong);
     }
     .capsule-cover {
       position: relative;
@@ -179,7 +185,7 @@
     import {
       bootSession, wireShell, fetchCapsuleRows, splitMailboxes, sortOpeningSoon,
       capsulePrimaryDateLine, capsuleRoutingLine, capsuleContentSummary,
-      capsuleCoverUrl, STATUS,
+      capsuleCoverUrl, capsuleHrefFor, STATUS,
     } from "./assets/arkive.js";
 
     // Tabs wire first (delegated) — interactivity never waits on the network.
@@ -272,7 +278,9 @@
     }
 
     function capsuleCard(row, { contributing, personPrefix }) {
-      const card = el("article", "card capsule-card");
+      const href = capsuleHrefFor(row);
+      const card = el(href ? "a" : "article", "card capsule-card");
+      if (href) card.href = href;
 
       const cover = el("div", "capsule-cover");
       const monogram = el("div", "capsule-monogram", (row.title || "A").trim().charAt(0).toUpperCase());

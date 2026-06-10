@@ -407,17 +407,78 @@ export async function capsuleCoverUrl(row) {
    recon report; implementations land in later workstreams.
    ------------------------------------------------------------ */
 
-/** TODO(WS3) — items_json codec.
- *  Read precedence per item: image_storage_path → photoStoragePath →
- *  inline photoData (legacy base64) · videoStoragePath (videoFileName-only
- *  items are unrecoverable → dignified fallback) · audioStoragePath ·
- *  Letter body = subtitle (plaintext). Photo items WRITE BOTH
- *  photoStoragePath and image_storage_path. Keys are load-bearing in
- *  storage RLS — never reshape/rename. Strip photoData before writes. */
+/** items_json codec (WS3 read side). Keys are load-bearing in 13 storage
+ *  RLS policies — read defensively, never reshape/rename on the way
+ *  through. encode() lands in WS5 (create + seal; strips photoData,
+ *  writes BOTH photoStoragePath and image_storage_path on photos). */
 export const ArkiveItemsCodec = {
-  decode() { throw new Error("ArkiveItemsCodec.decode arrives in WS3"); },
-  encode() { throw new Error("ArkiveItemsCodec.encode arrives in WS3"); },
+  /** Raw items_json array → normalized items, sorted by sort_index. */
+  decode(itemsJson) {
+    if (!Array.isArray(itemsJson)) return [];
+    return itemsJson
+      .map((raw, index) => ({
+        id: raw.id ?? null,
+        kind: raw.kind ?? "",
+        title: raw.title ?? "",
+        subtitle: raw.subtitle ?? "",
+        caption: raw.caption ?? null,
+        momentDate: raw.moment_date ?? null,
+        sortIndex: typeof raw.sort_index === "number" ? raw.sort_index : index,
+        isSpatial: raw.isSpatial === true,
+        imageStoragePath: raw.image_storage_path ?? null,
+        photoStoragePath: raw.photoStoragePath ?? null,
+        photoData: raw.photoData ?? null,
+        videoStoragePath: raw.videoStoragePath ?? null,
+        videoFileName: raw.videoFileName ?? null,
+        audioStoragePath: raw.audioStoragePath ?? null,
+      }))
+      .sort((a, b) => a.sortIndex - b.sortIndex);
+  },
+  encode() { throw new Error("ArkiveItemsCodec.encode arrives in WS5 (create + seal)"); },
 };
+
+/** Photo bytes, iOS resolution order (CapsulePhotoDetailView): inline
+ *  photoData first (legacy base64, always renderable), then storage —
+ *  moments-media, then arkive-photos (P1 fallback order). */
+export async function itemPhotoUrl(item) {
+  if (item.photoData) return `data:image/jpeg;base64,${item.photoData}`;
+  const path = item.imageStoragePath ?? item.photoStoragePath;
+  if (!path) return null;
+  const fromMoments = await ArkiveStorageHelpers.download(BUCKET.momentsMedia, path);
+  if (fromMoments) return fromMoments;
+  return ArkiveStorageHelpers.download(BUCKET.photos, path);
+}
+
+/** Single-row fetch under RLS (detail renders from the canonical row —
+ *  Phase-0: no extra fetch beyond the store shape). */
+export async function fetchCapsuleById(id) {
+  const { data, error } = await supabase
+    .from("capsules").select(CAPSULES_SELECT).eq("id", id).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+/** List-card routing (WS3): drafts stay inert until web create (WS5);
+ *  received-but-unopened goes to the ceremony page; everything else
+ *  (owned, contributing, opened-received) goes to read-only detail. */
+export function capsuleHrefFor(row) {
+  if (row.status === STATUS.draft) return null;
+  const isReceived = row.direction === DIRECTION.received || row.mailbox === MAILBOX.received;
+  if (isReceived && row.status !== STATUS.opened) {
+    return `./open.html?id=${encodeURIComponent(row.id)}`;
+  }
+  return `./capsule.html?id=${encodeURIComponent(row.id)}`;
+}
+
+/** Renderer fallback chain (Decision #115): display-only — never written. */
+export function itemDisplayTitle(item) {
+  if (item.title) return item.title;
+  if (item.momentDate) {
+    const noun = item.kind === ITEM_KIND.video ? "Video" : item.kind === ITEM_KIND.audio ? "Recording" : "Photo";
+    return `${noun} from ${fmtMedium(item.momentDate)}`;
+  }
+  return "";
+}
 
 /** Storage helpers. download() is live (WS2 — covers); signed-URL video
  *  streaming lands in WS3 (Decision #237).
@@ -446,8 +507,30 @@ export const ArkiveStorageHelpers = {
       return null;
     }
   },
-  signedVideoUrl() { throw new Error("ArkiveStorageHelpers.signedVideoUrl arrives in WS3"); },
+  /** Short-TTL signed URL for video streaming (Decision #237) — same RLS
+   *  boundary as download(); the sign requires SELECT on the object.
+   *  Cached per path with a safety margin before expiry. */
+  async signedVideoUrl(path, expiresInSeconds = 3600) {
+    if (!path) return null;
+    const cached = signedUrlCache.get(path);
+    if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
+    try {
+      const { data, error } = await supabase.storage
+        .from(BUCKET.videos).createSignedUrl(path, expiresInSeconds);
+      if (error) throw error;
+      signedUrlCache.set(path, {
+        url: data.signedUrl,
+        expiresAt: Date.now() + expiresInSeconds * 1000,
+      });
+      return data.signedUrl;
+    } catch (err) {
+      console.warn(`arkive: signed-url miss ${BUCKET.videos}/${path}`, err?.message ?? err);
+      return null;
+    }
+  },
 };
+
+const signedUrlCache = new Map();
 
 /** TODO(WS5) — delivery engine.
  *  Sender-side sweep (web runs it per Decision #237) + Deliver Now:
