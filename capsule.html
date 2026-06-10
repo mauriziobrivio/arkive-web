@@ -236,8 +236,10 @@
         document.getElementById("music").hidden = false;
         document.getElementById("music-title").textContent = row.music_song_title;
         document.getElementById("music-artist").textContent = row.music_artist_name ?? "";
-        if (row.music_artwork_url) {
+        if (row.music_artwork_url && /^https?:\/\//.test(row.music_artwork_url)) {
+          // some rows carry musickit:// library URLs — device-only, skip them
           const art = document.getElementById("music-art");
+          art.addEventListener("error", () => { art.hidden = true; }, { once: true });
           art.src = row.music_artwork_url;
           art.hidden = false;
         }
@@ -304,6 +306,18 @@
         // #t=0.001 makes the browser surface frame zero as the poster —
         // the ratified frame-grab fallback (no item-level thumbnails exist).
         video.src = `${url}#t=0.001`;
+        // Stall watchdog: streaming is primary, but if no metadata arrives
+        // in time, self-heal via authenticated download → blob URL
+        // (bucket caps keep item videos ≤100MB today).
+        const fallback = setTimeout(async () => {
+          const blobUrl = await ArkiveStorageHelpers.download(BUCKET.videos, item.videoStoragePath);
+          if (blobUrl) {
+            video.src = `${blobUrl}#t=0.001`;
+          } else {
+            frame.replaceWith(unavailableCard("This video isn’t available right now."));
+          }
+        }, 5000);
+        video.addEventListener("loadedmetadata", () => clearTimeout(fallback), { once: true });
         frame.appendChild(video);
       });
       appendMeta(figure, item);
