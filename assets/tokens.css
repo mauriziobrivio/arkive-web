@@ -41,6 +41,9 @@
 
 * { box-sizing: border-box; }
 
+/* author display rules (e.g. flex cards) must never defeat [hidden] */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
