@@ -480,6 +480,171 @@ export function itemDisplayTitle(item) {
   return "";
 }
 
+/* ------------------------------------------------------------
+   Shared per-kind item renderers (capsule.html detail + open.html
+   reveal). textContent everywhere — no HTML injection path.
+   ------------------------------------------------------------ */
+
+export function createEl(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+/** Build DOM nodes for decoded items, in the given (sort_index) order. */
+export function renderCapsuleItems(container, items) {
+  for (const item of items) {
+    switch (item.kind) {
+      case ITEM_KIND.photo: container.appendChild(photoItemNode(item)); break;
+      case ITEM_KIND.video: container.appendChild(videoItemNode(item)); break;
+      case ITEM_KIND.audio: container.appendChild(audioItemNode(item)); break;
+      case ITEM_KIND.letter: container.appendChild(letterItemNode(item, "Letter")); break;
+      case ITEM_KIND.textNote: container.appendChild(letterItemNode(item, "Note")); break;
+      default: container.appendChild(genericItemNode(item)); break;
+    }
+  }
+}
+
+function photoItemNode(item) {
+  const figure = createEl("figure", "item-figure");
+  const frame = createEl("div", "item-media-frame");
+  figure.appendChild(frame);
+  itemPhotoUrl(item).then((url) => {
+    if (!url) { frame.replaceWith(unavailableCard("This photo isn’t available.")); return; }
+    const img = document.createElement("img");
+    img.alt = itemDisplayTitle(item);
+    img.loading = "lazy";
+    img.src = url;
+    frame.appendChild(img);
+  });
+  appendItemMeta(figure, item);
+  return figure;
+}
+
+function videoItemNode(item) {
+  const figure = createEl("figure", "item-figure");
+  if (!item.videoStoragePath) {
+    // Legacy device-local era (videoFileName only) — bytes never reached
+    // the server; a broken player would be undignified.
+    figure.appendChild(unavailableCard("This video isn’t available on the web.", "It lives in the capsule on iOS."));
+    appendItemMeta(figure, item);
+    return figure;
+  }
+  const frame = createEl("div", "item-media-frame");
+  figure.appendChild(frame);
+  ArkiveStorageHelpers.signedVideoUrl(item.videoStoragePath).then((url) => {
+    if (!url) { frame.replaceWith(unavailableCard("This video isn’t available right now.")); return; }
+    const video = document.createElement("video");
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    // #t=0.001 surfaces frame zero as the poster (no item thumbnails exist).
+    video.src = `${url}#t=0.001`;
+    // Stall watchdog: streaming is primary; if no metadata arrives in time,
+    // self-heal via authenticated download → blob URL (≤100MB bucket cap).
+    const fallback = setTimeout(async () => {
+      const blobUrl = await ArkiveStorageHelpers.download(BUCKET.videos, item.videoStoragePath);
+      if (blobUrl) {
+        video.src = `${blobUrl}#t=0.001`;
+      } else {
+        frame.replaceWith(unavailableCard("This video isn’t available right now."));
+      }
+    }, 5000);
+    video.addEventListener("loadedmetadata", () => clearTimeout(fallback), { once: true });
+    frame.appendChild(video);
+  });
+  appendItemMeta(figure, item);
+  return figure;
+}
+
+function audioItemNode(item) {
+  const card = createEl("div", "card plain-card audio-card");
+  card.appendChild(createEl("span", "micro-label", "Voice"));
+  const title = itemDisplayTitle(item);
+  if (title) card.appendChild(createEl("p", "item-caption-line", title));
+  const audio = document.createElement("audio");
+  audio.controls = true;
+  audio.preload = "metadata";
+  card.appendChild(audio);
+  ArkiveStorageHelpers.download(BUCKET.audio, item.audioStoragePath).then((url) => {
+    if (!url) { card.replaceWith(unavailableCard("This recording isn’t available right now.")); return; }
+    audio.src = url;
+  });
+  appendItemCaptionAndDate(card, item);
+  return card;
+}
+
+function letterItemNode(item, label) {
+  const card = createEl("div", "letter-card");
+  card.appendChild(createEl("span", "micro-label", label));
+  if (item.title) card.appendChild(createEl("h2", "letter-title", item.title));
+  // verbatim — no trimming/normalizing (sharp edge #7)
+  card.appendChild(createEl("div", "letter-body", item.subtitle));
+  appendItemCaptionAndDate(card, item);
+  return card;
+}
+
+function genericItemNode(item) {
+  const card = createEl("div", "card plain-card");
+  if (item.kind) card.appendChild(createEl("span", "micro-label", item.kind));
+  const title = itemDisplayTitle(item);
+  if (title) card.appendChild(createEl("p", "item-caption-line", title));
+  if (item.subtitle) card.appendChild(createEl("p", "item-side-thought", item.subtitle));
+  return card;
+}
+
+function unavailableCard(message, hint) {
+  const card = createEl("div", "card placeholder-card");
+  card.appendChild(createEl("p", "empty-title", message));
+  if (hint) card.appendChild(createEl("p", "empty-hint", hint));
+  return card;
+}
+
+function appendItemMeta(node, item) {
+  const title = itemDisplayTitle(item);
+  if (title) node.appendChild(createEl("p", "item-caption-line", title));
+  appendItemCaptionAndDate(node, item);
+}
+
+function appendItemCaptionAndDate(node, item) {
+  if (item.caption) node.appendChild(createEl("p", "item-side-thought", item.caption));
+  if (item.momentDate) node.appendChild(createEl("p", "item-date", fmtMedium(item.momentDate)));
+}
+
+/* ------------------------------------------------------------
+   Ceremony writes (WS4) — recipient-side, COLUMN-ONLY updates.
+   The enforce_capsule_column_authority trigger allows recipients
+   exactly 7 columns; we touch 4. Never send a full row. The extra
+   recipient_account_id filter makes a non-recipient call a no-op.
+   ------------------------------------------------------------ */
+
+export const ArkiveCeremonyWrites = {
+  /** iOS onCeremonyEntered parity: every entry, first time and revisits. */
+  async touchLastViewed(capsuleId, userId) {
+    const { error } = await supabase.from("capsules")
+      .update({ last_viewed_at: new Date().toISOString() })
+      .eq("id", capsuleId).eq("recipient_account_id", userId);
+    if (error) console.error("arkive: last_viewed_at write failed", error);
+  },
+  /** iOS onBeganOpening parity: first seal-contact; idempotent. */
+  async markBeganOpening(capsuleId, userId) {
+    const { error } = await supabase.from("capsules")
+      .update({ has_began_opening: true })
+      .eq("id", capsuleId).eq("recipient_account_id", userId);
+    if (error) console.error("arkive: has_began_opening write failed", error);
+  },
+  /** iOS onMarkOpened parity: the PAIRED completion write — both columns
+   *  in one update, exact 'Opened' literal. */
+  async markOpened(capsuleId, userId) {
+    const { error } = await supabase.from("capsules")
+      .update({ opened_at: new Date().toISOString(), status: STATUS.opened })
+      .eq("id", capsuleId).eq("recipient_account_id", userId);
+    if (error) { console.error("arkive: opened_at/status paired write failed", error); return false; }
+    return true;
+  },
+};
+
 /** Storage helpers. download() is live (WS2 — covers); signed-URL video
  *  streaming lands in WS3 (Decision #237).
  *  Upload path templates for WS5 (uid lowercase, always): moments-media

@@ -257,6 +257,56 @@ a {
   margin-top: 10px;
 }
 
+/* ---------- capsule item renderers (capsule.html + open.html) ---------- */
+
+.item-figure { margin: 0; }
+.item-media-frame {
+  border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--border-soft);
+  background: rgba(20, 17, 14, 0.05);
+}
+.item-media-frame img, .item-media-frame video {
+  width: 100%; display: block; max-height: 78vh; object-fit: contain;
+  background: rgba(20, 17, 14, 0.04);
+}
+.item-caption-line { font-size: 15px; color: var(--ink); margin-top: 10px; }
+.item-side-thought { font-size: 14px; color: var(--ink-soft); font-style: italic; margin-top: 4px; }
+.item-date { font-size: 12.5px; color: var(--ink-mute); margin-top: 4px; }
+
+.letter-card {
+  background: #FFFAF0; /* letter paper surface (shipped-app letter treatment) */
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  padding: 34px 38px;
+}
+.letter-card .micro-label { display: block; margin-bottom: 14px; }
+.letter-title { font-size: 20px; margin-bottom: 14px; }
+.letter-body {
+  font-size: 16.5px; line-height: 1.85; color: var(--ink);
+  white-space: pre-wrap; overflow-wrap: break-word;
+}
+
+.plain-card { padding: 22px 26px; }
+.audio-card audio { width: 100%; margin-top: 12px; }
+.placeholder-card { text-align: center; padding: 34px 26px; }
+.placeholder-card .empty-title { font-size: 17px; color: var(--ink-soft); }
+
+/* ---------- ceremony reveal ---------- */
+
+.reveal-item {
+  opacity: 0;
+  transform: translateY(14px);
+  animation: arkive-reveal 640ms ease forwards;
+}
+
+@keyframes arkive-reveal {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal-item { opacity: 1; transform: none; animation: none; }
+}
+
 /* ---------- motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {

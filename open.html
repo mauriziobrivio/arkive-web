@@ -6,18 +6,61 @@
   <title>Arkive — A capsule for you</title>
   <link rel="stylesheet" href="./assets/tokens.css">
   <style>
-    .ceremony-stub {
-      min-height: 70vh;
+    .ceremony-main { max-width: 760px; }
+    .state-block { margin-top: 60px; }
+
+    /* sealed face */
+    .sealed-face {
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
       text-align: center;
-      padding: 48px 24px;
+      padding: 40px 0 20px;
+      transition: opacity 700ms ease, transform 700ms ease;
     }
-    .ceremony-stub h1 { margin-top: 16px; }
-    .ceremony-stub .empty-hint { max-width: 440px; margin-top: 12px; line-height: 1.6; }
-    .ceremony-stub .actions { margin-top: 30px; }
+    .sealed-face.unsealing { opacity: 0; transform: scale(0.985); pointer-events: none; }
+    .sealed-cover {
+      position: relative;
+      width: min(540px, 100%);
+      aspect-ratio: 4 / 3;
+      border-radius: var(--radius-card);
+      overflow: hidden;
+      background: rgba(20, 17, 14, 0.05);
+      border: 1px solid var(--border-soft);
+      box-shadow: 0 18px 48px rgba(20, 17, 14, 0.10);
+    }
+    .sealed-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .sealed-cover .capsule-monogram {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 64px; color: var(--bronze); opacity: 0.5;
+    }
+    .sealed-from { margin-top: 30px; }
+    .sealed-title { font-size: 32px; margin-top: 10px; }
+    .sealed-date { font-size: 14px; color: var(--ink-mute); margin-top: 8px; }
+    .sealed-actions { margin-top: 30px; }
+    .sealed-hint { font-size: 13px; color: var(--ink-mute); margin-top: 14px; }
+
+    /* reveal */
+    .reveal-head { text-align: center; padding-top: 16px; }
+    .reveal-title { font-size: 32px; }
+    .reveal-from { font-size: 16px; color: var(--ink-soft); margin-top: 6px; }
+    .reveal-openedline { font-size: 14px; color: var(--ink-mute); margin-top: 8px; }
+    .reveal-message-card {
+      background: #FFFAF0;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-card);
+      padding: 28px 32px;
+      text-align: center;
+      font-size: 17px;
+      line-height: 1.75;
+      white-space: pre-wrap;
+    }
+    .reveal-items { margin-top: 36px; display: flex; flex-direction: column; gap: 26px; }
+
+    /* sender view of a sealed capsule */
+    .sender-view { text-align: center; }
+    .sender-view .actions { margin-top: 26px; }
   </style>
 </head>
 <body hidden>
@@ -34,19 +77,176 @@
     </div>
   </header>
 
-  <main class="ceremony-stub">
-    <span class="micro-label">Received capsule</span>
-    <h1>This capsule is waiting for you.</h1>
-    <p class="empty-hint">
-      The opening ceremony arrives on the web in the next build.
-      For now, open it in the Arkive app — it’s worth the moment.
-    </p>
-    <p class="actions"><a class="btn btn-quiet" href="./capsules.html">Back to Capsules</a></p>
+  <main class="shell-main ceremony-main">
+    <div class="empty-state state-block" id="open-loading">
+      <p class="empty-title">Bringing your capsule forward…</p>
+    </div>
+
+    <div class="empty-state state-block" id="open-missing" hidden>
+      <p class="empty-title">This capsule isn’t available.</p>
+      <p class="empty-hint">It may have been removed, or it belongs to another account.</p>
+    </div>
+
+    <div class="empty-state state-block sender-view" id="sender-view" hidden>
+      <span class="micro-label">Sealed</span>
+      <p class="empty-title" id="sender-view-line">This capsule is sealed for its recipient.</p>
+      <p class="empty-hint">The opening belongs to them.</p>
+      <p class="actions"><a class="btn btn-quiet" id="sender-own-link" href="./capsules.html">View your copy</a></p>
+    </div>
+
+    <section class="sealed-face" id="sealed-face" hidden>
+      <div class="sealed-cover" id="sealed-cover">
+        <div class="capsule-monogram" id="sealed-monogram"></div>
+      </div>
+      <p class="micro-label sealed-from" id="sealed-from"></p>
+      <h1 class="sealed-title" id="sealed-title"></h1>
+      <p class="sealed-date" id="sealed-date"></p>
+      <div class="sealed-actions">
+        <button class="btn btn-primary" id="unseal" type="button">Open Capsule</button>
+      </div>
+      <p class="sealed-hint">Take your time. It was kept for this moment.</p>
+    </section>
+
+    <section id="reveal" hidden>
+      <div class="reveal-head">
+        <p class="micro-label" id="reveal-from"></p>
+        <h1 class="reveal-title" id="reveal-title"></h1>
+        <p class="reveal-openedline" id="reveal-openedline"></p>
+      </div>
+      <div class="reveal-items" id="reveal-items"></div>
+    </section>
   </main>
 
   <script type="module">
-    import { bootSession, wireShell } from "./assets/arkive.js";
-    wireShell(await bootSession());
+    import {
+      bootSession, wireShell, fetchCapsuleById, capsuleCoverUrl,
+      ArkiveItemsCodec, renderCapsuleItems, createEl, ArkiveCeremonyWrites,
+      fmtMedium, STATUS, DIRECTION, MAILBOX,
+    } from "./assets/arkive.js";
+
+    const boot = await bootSession();
+    wireShell(boot);
+    const userId = boot.user.id;
+
+    const params = new URLSearchParams(window.location.search);
+    const capsuleId = params.get("id");
+    const loadingEl = document.getElementById("open-loading");
+
+    let row = null;
+    try {
+      row = capsuleId ? await fetchCapsuleById(capsuleId) : null;
+    } catch (err) {
+      console.error("arkive: capsule fetch failed", err);
+    }
+    loadingEl.hidden = true;
+
+    if (!row) {
+      document.getElementById("open-missing").hidden = false;
+    } else if (!(row.direction === DIRECTION.received || row.mailbox === MAILBOX.received)) {
+      // a sender-row id pasted here — detail owns that view
+      window.location.replace(`./capsule.html?id=${encodeURIComponent(row.id)}`);
+    } else if (row.recipient_account_id !== userId) {
+      // The viewer can read this row (they created it) but the opening
+      // belongs to the recipient — no contents, no writes.
+      senderView(row);
+    } else if (row.opened_at) {
+      revisit(row);
+    } else {
+      ceremony(row);
+    }
+
+    function senderView(row) {
+      const view = document.getElementById("sender-view");
+      view.hidden = false;
+      const name = row.recipient_name || row.recipient_name_snapshot;
+      if (name) {
+        document.getElementById("sender-view-line").textContent = `This capsule is sealed for ${name}.`;
+      }
+      if (row.shared_capsule_id) {
+        document.getElementById("sender-own-link").href = `./capsule.html?id=${encodeURIComponent(row.shared_capsule_id)}`;
+      }
+    }
+
+    /* ---- revisit: already opened — render directly, no re-ceremony,
+            never re-write opened_at (refresh last_viewed_at only) ---- */
+    function revisit(row) {
+      ArkiveCeremonyWrites.touchLastViewed(row.id, userId);
+      showReveal(row, { staggered: false });
+    }
+
+    /* ---- first-open ceremony ---- */
+    function ceremony(row) {
+      // iOS onCeremonyEntered parity — every entry touches last_viewed_at.
+      ArkiveCeremonyWrites.touchLastViewed(row.id, userId);
+
+      const face = document.getElementById("sealed-face");
+      face.hidden = false;
+      document.title = "Arkive — A capsule for you";
+
+      document.getElementById("sealed-monogram").textContent = (row.title || "A").trim().charAt(0).toUpperCase();
+      capsuleCoverUrl(row).then((url) => {
+        if (!url) return;
+        const img = document.createElement("img");
+        img.alt = "";
+        img.src = url;
+        const coverEl = document.getElementById("sealed-cover");
+        coverEl.insertBefore(img, coverEl.firstChild);
+        document.getElementById("sealed-monogram").remove();
+      });
+
+      const sender = row.sender_display_name_snapshot;
+      document.getElementById("sealed-from").textContent = sender ? `From ${sender}` : "For you";
+      document.getElementById("sealed-title").textContent = row.title || "A capsule";
+      if (row.sealed_at) {
+        document.getElementById("sealed-date").textContent = `Sealed ${fmtMedium(row.sealed_at)} — opened today, by you.`;
+      }
+
+      const unsealBtn = document.getElementById("unseal");
+      unsealBtn.addEventListener("click", async () => {
+        unsealBtn.disabled = true;
+        // iOS onBeganOpening parity — single-column, idempotent.
+        await ArkiveCeremonyWrites.markBeganOpening(row.id, userId);
+
+        face.classList.add("unsealing");
+        setTimeout(async () => {
+          face.hidden = true;
+          showReveal(row, { staggered: true });
+          // Completion — the paired write — once the reveal is on screen.
+          setTimeout(async () => {
+            const ok = await ArkiveCeremonyWrites.markOpened(row.id, userId);
+            if (ok) {
+              document.getElementById("reveal-openedline").textContent = `Opened ${fmtMedium(new Date().toISOString())}`;
+            }
+          }, 1600);
+        }, 700);
+      }, { once: true });
+    }
+
+    function showReveal(row, { staggered }) {
+      const reveal = document.getElementById("reveal");
+      reveal.hidden = false;
+      document.title = `Arkive — ${row.title || "Capsule"}`;
+
+      const sender = row.sender_display_name_snapshot;
+      document.getElementById("reveal-from").textContent = sender ? `From ${sender}` : "For you";
+      document.getElementById("reveal-title").textContent = row.title || "A capsule";
+      if (row.opened_at) {
+        document.getElementById("reveal-openedline").textContent = `Opened ${fmtMedium(row.opened_at)}`;
+      }
+
+      const itemsEl = document.getElementById("reveal-items");
+      if (row.reveal_message) {
+        itemsEl.appendChild(createEl("div", "reveal-message-card", row.reveal_message));
+      }
+      renderCapsuleItems(itemsEl, ArkiveItemsCodec.decode(row.items_json));
+
+      if (staggered) {
+        Array.from(itemsEl.children).forEach((child, index) => {
+          child.classList.add("reveal-item");
+          child.style.animationDelay = `${Math.min(index, 10) * 140}ms`;
+        });
+      }
+    }
   </script>
 </body>
 </html>

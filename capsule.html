@@ -55,38 +55,6 @@
 
     .items-block { margin-top: 40px; display: flex; flex-direction: column; gap: 26px; }
 
-    .item-figure { margin: 0; }
-    .item-media-frame {
-      border-radius: 14px; overflow: hidden;
-      border: 1px solid var(--border-soft);
-      background: rgba(20, 17, 14, 0.05);
-    }
-    .item-media-frame img, .item-media-frame video {
-      width: 100%; display: block; max-height: 78vh; object-fit: contain;
-      background: rgba(20, 17, 14, 0.04);
-    }
-    .item-caption-line { font-size: 15px; color: var(--ink); margin-top: 10px; }
-    .item-side-thought { font-size: 14px; color: var(--ink-soft); font-style: italic; margin-top: 4px; }
-    .item-date { font-size: 12.5px; color: var(--ink-mute); margin-top: 4px; }
-
-    .letter-card {
-      background: #FFFAF0; /* letter paper surface (shipped-app letter treatment) */
-      border: 1px solid var(--border-soft);
-      border-radius: var(--radius-card);
-      padding: 34px 38px;
-    }
-    .letter-card .micro-label { display: block; margin-bottom: 14px; }
-    .letter-title { font-size: 20px; margin-bottom: 14px; }
-    .letter-body {
-      font-size: 16.5px; line-height: 1.85; color: var(--ink);
-      white-space: pre-wrap; overflow-wrap: break-word;
-    }
-
-    .plain-card { padding: 22px 26px; }
-    .audio-card audio { width: 100%; margin-top: 12px; }
-    .placeholder-card { text-align: center; padding: 34px 26px; }
-    .placeholder-card .empty-title { font-size: 17px; color: var(--ink-soft); }
-
     .contributors-block { margin-top: 44px; }
     .contributor-row {
       display: flex; justify-content: space-between; align-items: baseline;
@@ -159,11 +127,12 @@
   <script type="module">
     import {
       bootSession, wireShell, fetchCapsuleById, capsuleCoverUrl,
-      ArkiveItemsCodec, ArkiveStorageHelpers, itemPhotoUrl, itemDisplayTitle,
+      ArkiveItemsCodec, renderCapsuleItems, createEl,
       capsulePrimaryDateLine, capsuleRoutingLine, fmtMedium,
-      supabase, STATUS, DIRECTION, MAILBOX, ITEM_KIND, CONTRIBUTOR_STATUS, BUCKET,
+      supabase, STATUS, DIRECTION, MAILBOX, CONTRIBUTOR_STATUS,
     } from "./assets/arkive.js";
 
+    const el = createEl;
     const boot = await bootSession();
     wireShell(boot);
 
@@ -221,14 +190,14 @@
       document.getElementById("statusline").textContent = capsulePrimaryDateLine(row);
       const subline = capsuleRoutingLine(row);
       if (subline) {
-        const el = document.getElementById("subline");
-        el.textContent = subline;
-        el.hidden = false;
+        const node = document.getElementById("subline");
+        node.textContent = subline;
+        node.hidden = false;
       }
       if (row.sealed_at) {
-        const el = document.getElementById("sealedline");
-        el.textContent = `Sealed ${fmtMedium(row.sealed_at)}`;
-        el.hidden = false;
+        const node = document.getElementById("sealedline");
+        node.textContent = `Sealed ${fmtMedium(row.sealed_at)}`;
+        node.hidden = false;
       }
 
       // music attribution (display-only, Decision #237)
@@ -245,7 +214,7 @@
         }
       }
 
-      renderItems(ArkiveItemsCodec.decode(row.items_json));
+      renderCapsuleItems(document.getElementById("items"), ArkiveItemsCodec.decode(row.items_json));
       loadContributors(row);
     }
 
@@ -254,128 +223,6 @@
       if (!name) return "";
       const relationship = row.recipient_relationship_snapshot;
       return relationship ? `For ${name} · ${relationship}` : `For ${name}`;
-    }
-
-    function renderItems(items) {
-      const block = document.getElementById("items");
-      for (const item of items) {
-        switch (item.kind) {
-          case ITEM_KIND.photo: block.appendChild(photoItem(item)); break;
-          case ITEM_KIND.video: block.appendChild(videoItem(item)); break;
-          case ITEM_KIND.audio: block.appendChild(audioItem(item)); break;
-          case ITEM_KIND.letter: block.appendChild(letterItem(item, "Letter")); break;
-          case ITEM_KIND.textNote: block.appendChild(letterItem(item, "Note")); break;
-          default: block.appendChild(genericItem(item)); break;
-        }
-      }
-    }
-
-    function photoItem(item) {
-      const figure = el("figure", "item-figure");
-      const frame = el("div", "item-media-frame");
-      figure.appendChild(frame);
-      itemPhotoUrl(item).then((url) => {
-        if (!url) { frame.replaceWith(unavailableCard("This photo isn’t available.")); return; }
-        const img = document.createElement("img");
-        img.alt = itemDisplayTitle(item);
-        img.loading = "lazy";
-        img.src = url;
-        frame.appendChild(img);
-      });
-      appendMeta(figure, item);
-      return figure;
-    }
-
-    function videoItem(item) {
-      const figure = el("figure", "item-figure");
-      if (!item.videoStoragePath) {
-        // Legacy device-local era (videoFileName only) — bytes never reached
-        // the server; a broken player would be undignified.
-        figure.appendChild(unavailableCard("This video isn’t available on the web.", "It lives in the capsule on iOS."));
-        appendMeta(figure, item);
-        return figure;
-      }
-      const frame = el("div", "item-media-frame");
-      figure.appendChild(frame);
-      ArkiveStorageHelpers.signedVideoUrl(item.videoStoragePath).then((url) => {
-        if (!url) { frame.replaceWith(unavailableCard("This video isn’t available right now.")); return; }
-        const video = document.createElement("video");
-        video.controls = true;
-        video.playsInline = true;
-        video.preload = "metadata";
-        // #t=0.001 makes the browser surface frame zero as the poster —
-        // the ratified frame-grab fallback (no item-level thumbnails exist).
-        video.src = `${url}#t=0.001`;
-        // Stall watchdog: streaming is primary, but if no metadata arrives
-        // in time, self-heal via authenticated download → blob URL
-        // (bucket caps keep item videos ≤100MB today).
-        const fallback = setTimeout(async () => {
-          const blobUrl = await ArkiveStorageHelpers.download(BUCKET.videos, item.videoStoragePath);
-          if (blobUrl) {
-            video.src = `${blobUrl}#t=0.001`;
-          } else {
-            frame.replaceWith(unavailableCard("This video isn’t available right now."));
-          }
-        }, 5000);
-        video.addEventListener("loadedmetadata", () => clearTimeout(fallback), { once: true });
-        frame.appendChild(video);
-      });
-      appendMeta(figure, item);
-      return figure;
-    }
-
-    function audioItem(item) {
-      const card = el("div", "card plain-card audio-card");
-      card.appendChild(el("span", "micro-label", "Voice"));
-      const title = itemDisplayTitle(item);
-      if (title) card.appendChild(el("p", "item-caption-line", title));
-      const audio = document.createElement("audio");
-      audio.controls = true;
-      audio.preload = "metadata";
-      card.appendChild(audio);
-      ArkiveStorageHelpers.download(BUCKET.audio, item.audioStoragePath).then((url) => {
-        if (!url) { card.replaceWith(unavailableCard("This recording isn’t available right now.")); return; }
-        audio.src = url;
-      });
-      appendCaptionAndDate(card, item);
-      return card;
-    }
-
-    function letterItem(item, label) {
-      const card = el("div", "letter-card");
-      card.appendChild(el("span", "micro-label", label));
-      if (item.title) card.appendChild(el("h2", "letter-title", item.title));
-      // verbatim — no trimming/normalizing (sharp edge #7)
-      card.appendChild(el("div", "letter-body", item.subtitle));
-      appendCaptionAndDate(card, item);
-      return card;
-    }
-
-    function genericItem(item) {
-      const card = el("div", "card plain-card");
-      if (item.kind) card.appendChild(el("span", "micro-label", item.kind));
-      const title = itemDisplayTitle(item);
-      if (title) card.appendChild(el("p", "item-caption-line", title));
-      if (item.subtitle) card.appendChild(el("p", "item-side-thought", item.subtitle));
-      return card;
-    }
-
-    function unavailableCard(message, hint) {
-      const card = el("div", "card placeholder-card");
-      card.appendChild(el("p", "empty-title", message));
-      if (hint) card.appendChild(el("p", "empty-hint", hint));
-      return card;
-    }
-
-    function appendMeta(node, item) {
-      const title = itemDisplayTitle(item);
-      if (title) node.appendChild(el("p", "item-caption-line", title));
-      appendCaptionAndDate(node, item);
-    }
-
-    function appendCaptionAndDate(node, item) {
-      if (item.caption) node.appendChild(el("p", "item-side-thought", item.caption));
-      if (item.momentDate) node.appendChild(el("p", "item-date", fmtMedium(item.momentDate)));
     }
 
     async function loadContributors(row) {
@@ -398,13 +245,6 @@
       } catch (err) {
         console.warn("arkive: contributors load failed (non-fatal)", err);
       }
-    }
-
-    function el(tag, className, text) {
-      const node = document.createElement(tag);
-      if (className) node.className = className;
-      if (text != null) node.textContent = text;
-      return node;
     }
   </script>
 </body>
