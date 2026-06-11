@@ -33,7 +33,7 @@ python3 -m http.server 4173
 
 ## Deploy
 
-GitHub Pages serves `main` at the repo root. Push to `main` = deploy.
+GitHub Pages serves `main` at the repo root on **https://app.arkive-it.app** (custom domain via `CNAME`). Push to `main` = deploy.
 
 ## Status
 
