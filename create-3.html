@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — Seal Capsule</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws5c">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws6">
   <style>
     .create-main { max-width: 640px; }
     .step-label { margin-top: 8px; display: block; }
@@ -52,7 +52,7 @@
   </header>
 
   <main class="shell-main create-main">
-    <a class="back-link" id="back-link" href="./create-2.html" style="font-size:14px;color:var(--ink-soft)">← Back</a>
+    <a class="back-link" id="back-link" href="./create-2.html">← Back</a>
     <span class="micro-label step-label">New capsule · Step 3 of 3</span>
     <h1 class="step-title">When should it open?</h1>
 
@@ -112,7 +112,7 @@
       bootSession, wireShell, supabase, fetchCapsuleById, ArkiveItemsCodec,
       ArkiveCapsuleWriter, ArkiveDeliveryEngine, sealGate, countOwnSealedCapsules,
       DELIVERY_TYPE, ITEM_KIND, fmtMedium, isComped,
-    } from "./assets/arkive.js?v=ws5c";
+    } from "./assets/arkive.js?v=ws6";
 
     const boot = await bootSession();
     wireShell(boot);

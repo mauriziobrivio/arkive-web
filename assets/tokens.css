@@ -76,6 +76,30 @@ a {
   text-decoration: none;
 }
 
+/* ---------- focus visibility (keyboard nav) ---------- */
+
+a:focus-visible, button:focus-visible, .tab:focus-visible,
+input[type="radio"]:focus-visible, input[type="file"]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- shared chrome bits ---------- */
+
+.back-link {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+.back-link:hover { color: var(--ink); }
+
+.page-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
 /* ---------- micro-label (bronze, letterspaced caps) ---------- */
 
 .micro-label {

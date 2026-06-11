@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — Capsules</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws5c">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws6">
   <style>
     .capsule-grid {
       display: grid;
@@ -102,6 +102,13 @@
       padding-top: 10px;
       border-top: 1px solid var(--border-soft);
     }
+    .capsule-signal {
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--bronze);
+      margin-top: 6px;
+    }
     /* drafts strip */
     .drafts-block { margin-top: 28px; }
     .drafts-row {
@@ -144,7 +151,7 @@
   </header>
 
   <main class="shell-main">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:20px">
+    <div class="page-head-row">
       <h1>Capsules</h1>
       <a class="btn btn-primary" href="./create-1.html">Create Capsule</a>
     </div>
@@ -189,7 +196,7 @@
       bootSession, wireShell, fetchCapsuleRows, splitMailboxes, sortOpeningSoon,
       capsulePrimaryDateLine, capsuleRoutingLine, capsuleContentSummary,
       capsuleCoverUrl, capsuleHrefFor, ArkiveDeliveryEngine, STATUS,
-    } from "./assets/arkive.js?v=ws5c";
+    } from "./assets/arkive.js?v=ws6";
 
     // Tabs wire first (delegated) — interactivity never waits on the network.
     const tablist = document.querySelector(".tabs");
@@ -325,6 +332,12 @@
       body.appendChild(el("p", "capsule-dateline", capsulePrimaryDateLine(row)));
       const subline = capsuleRoutingLine(row);
       if (subline) body.appendChild(el("p", "capsule-subline", subline));
+      // iOS lightweightDeliverySignal — only the case the subline doesn't already say
+      if (personPrefix === "For"
+        && row.recipient_routing_state === "Linked To Recipient Account"
+        && row.delivery_type === "When They Join Arkive") {
+        body.appendChild(el("p", "capsule-signal", "Recipient joined Arkive"));
+      }
       body.appendChild(el("p", "capsule-summary", capsuleContentSummary(row)));
       card.appendChild(body);
       return card;
