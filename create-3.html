@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — Seal Capsule</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws7">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws8">
   <style>
     .create-main { max-width: 640px; }
     .step-label { margin-top: 8px; display: block; }
@@ -77,6 +77,16 @@
           <span><span class="schedule-name">Send now</span><br>
           <span class="schedule-hint">Sealed and delivered right away.</span></span>
         </label>
+        <label class="schedule-option" data-mode="age" id="opt-age">
+          <input type="radio" name="schedule" value="age">
+          <span><span class="schedule-name">On a birthday milestone</span><br>
+          <span class="schedule-hint" id="age-hint">Opens when they reach a certain age.</span></span>
+        </label>
+        <label class="schedule-option" data-mode="join">
+          <input type="radio" name="schedule" value="join">
+          <span><span class="schedule-name">When they join Arkive</span><br>
+          <span class="schedule-hint">It waits, sealed, until they have an account.</span></span>
+        </label>
         <label class="schedule-option" data-mode="manual">
           <input type="radio" name="schedule" value="manual">
           <span><span class="schedule-name">I’ll deliver it myself</span><br>
@@ -86,6 +96,11 @@
       <div class="date-row" id="date-row" hidden>
         <label class="field-label" for="release-date">Opening day</label>
         <input class="field" id="release-date" type="date">
+      </div>
+      <div class="date-row" id="age-row" hidden>
+        <label class="field-label" for="age-target">Opens at age</label>
+        <input class="field" id="age-target" type="number" min="1" max="120" inputmode="numeric" placeholder="e.g. 18">
+        <p class="field-hint" id="age-computed" role="status" aria-live="polite"></p>
       </div>
     </div>
 
@@ -111,8 +126,8 @@
     import {
       bootSession, wireShell, supabase, fetchCapsuleById, ArkiveItemsCodec,
       ArkiveCapsuleWriter, ArkiveDeliveryEngine, sealGate, countOwnSealedCapsules,
-      DELIVERY_TYPE, ITEM_KIND, fmtMedium, isComped,
-    } from "./assets/arkive.js?v=ws7";
+      ageMilestoneDate, DELIVERY_TYPE, ITEM_KIND, fmtMedium, isComped,
+    } from "./assets/arkive.js?v=ws8";
 
     const boot = await bootSession();
     wireShell(boot);
@@ -128,6 +143,8 @@
     const draft = {
       id: row.id, title: row.title ?? "", items: ArkiveItemsCodec.decode(row.items_json),
       coverStoragePath: row.cover_storage_path,
+      coverVideoStoragePath: row.cover_video_storage_path,
+      coverVideoThumbnailPath: row.cover_video_thumbnail_path,
       recipientProfileId: row.recipient_profile_id, recipientName: row.recipient_name,
       recipientRelationship: row.recipient_relationship_snapshot,
       recipientEmail: row.recipient_contact_hint, guestEmail: row.guest_delivery_email,
@@ -145,18 +162,51 @@
     if (draft.revealMessage) document.getElementById("reveal-message").value = draft.revealMessage;
     if (!isComped()) document.getElementById("date-hint").textContent = "It opens for them on the day you choose — within two years on the free plan.";
 
+    // Age Milestone needs the recipient profile's birth_date; gate honestly if absent.
+    let recipientBirthDate = null;
+    if (draft.recipientProfileId) {
+      try {
+        const { data } = await supabase.from("people").select("birth_date").eq("id", draft.recipientProfileId).maybeSingle();
+        recipientBirthDate = data?.birth_date ?? null;
+      } catch (err) { console.warn("arkive: birth_date read failed", err); }
+    }
+    if (!recipientBirthDate) {
+      const opt = document.getElementById("opt-age");
+      opt.style.opacity = "0.5";
+      opt.querySelector("input").disabled = true;
+      document.getElementById("age-hint").textContent = draft.recipientProfileId
+        ? "Add their birthday in the Arkive app to schedule by age."
+        : "Only available for a saved person with a birthday.";
+    }
+
     // schedule selection
     let mode = null;
     const dateRow = document.getElementById("date-row");
+    const ageRow = document.getElementById("age-row");
+    const ageField = document.getElementById("age-target");
+    const ageComputed = document.getElementById("age-computed");
     document.getElementById("schedule-list").addEventListener("change", (event) => {
       const option = event.target.closest(".schedule-option");
-      if (!option) return;
+      if (!option || option.querySelector("input")?.disabled) return;
       mode = option.dataset.mode;
       document.querySelectorAll(".schedule-option").forEach((o) => o.classList.toggle("selected", o === option));
       dateRow.hidden = mode !== "date";
+      ageRow.hidden = mode !== "age";
     });
     const dateField = document.getElementById("release-date");
     dateField.min = new Date().toISOString().slice(0, 10);
+
+    function computedMilestone() {
+      const age = parseInt(ageField.value, 10);
+      if (!recipientBirthDate || !Number.isFinite(age) || age < 1) return null;
+      return ageMilestoneDate(recipientBirthDate, age);
+    }
+    ageField.addEventListener("input", () => {
+      const iso = computedMilestone();
+      ageComputed.textContent = iso
+        ? (new Date(iso) > new Date() ? `Opens ${fmtMedium(iso)}.` : "That milestone has already passed — pick a higher age.")
+        : "";
+    });
 
     const errorEl = document.getElementById("error");
     document.getElementById("seal").addEventListener("click", async () => {
@@ -168,6 +218,7 @@
       let deliveryType;
       let releaseAtISO = null;
       let releaseDate = null;
+      let ageTarget = null;
       if (mode === "date") {
         if (!dateField.value) { errorEl.textContent = "Pick the opening day."; return; }
         releaseDate = new Date(`${dateField.value}T12:00:00`);
@@ -177,6 +228,16 @@
       } else if (mode === "now") {
         releaseAtISO = new Date().toISOString();
         deliveryType = DELIVERY_TYPE.specificDate;
+      } else if (mode === "age") {
+        ageTarget = parseInt(ageField.value, 10);
+        const iso = computedMilestone();
+        if (!iso) { errorEl.textContent = "Enter the age it should open at."; return; }
+        if (new Date(iso) <= new Date()) { errorEl.textContent = "That milestone has already passed — pick a higher age."; return; }
+        releaseAtISO = iso;
+        releaseDate = new Date(iso);
+        deliveryType = DELIVERY_TYPE.ageMilestone;
+      } else if (mode === "join") {
+        deliveryType = DELIVERY_TYPE.whenTheyJoinArkive;   // release_at null; rule on_join
       } else {
         deliveryType = DELIVERY_TYPE.manualDelivery;
       }
@@ -194,7 +255,7 @@
         draft.revealMessage = document.getElementById("reveal-message").value.trim() || null;
         const senderProfileId = await ownProfileId();
         const sealedRow = await ArkiveCapsuleWriter.seal(draft, userId, {
-          deliveryType, releaseAtISO,
+          deliveryType, releaseAtISO, ageTarget,
           senderDisplayName: boot.account?.display_name ?? null,
           senderProfileId,
         });

@@ -25,6 +25,9 @@
   /* field surface: shipped-app pattern (white 0.75 on warm paper) */
   --field-bg: rgba(255, 255, 255, 0.75);
 
+  /* letter paper surface (#FFFAF0) — letter cards + the reveal message */
+  --letter-paper: #FFFAF0;
+
   /* —— type —— */
   /* ui-serif resolves to New York on Apple platforms — closest
      web match to the app's .design(.serif) */
@@ -314,7 +317,7 @@ input[type="radio"]:focus-visible, input[type="file"]:focus-visible {
 .item-date { font-size: 12.5px; color: var(--ink-mute); margin-top: 4px; }
 
 .letter-card {
-  background: #FFFAF0; /* letter paper surface (shipped-app letter treatment) */
+  background: var(--letter-paper); /* shipped-app letter treatment */
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-card);
   padding: 34px 38px;

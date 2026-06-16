@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — A capsule for you</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws7">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws8">
   <style>
     .ceremony-main { max-width: 760px; }
     .state-block { margin-top: 60px; }
@@ -46,8 +46,9 @@
     .reveal-title { font-size: 32px; }
     .reveal-from { font-size: 16px; color: var(--ink-soft); margin-top: 6px; }
     .reveal-openedline { font-size: 14px; color: var(--ink-mute); margin-top: 8px; }
+    .reveal-music { font-size: 13px; color: var(--bronze); letter-spacing: 0.04em; margin-top: 6px; }
     .reveal-message-card {
-      background: #FFFAF0;
+      background: var(--letter-paper);
       border: 1px solid var(--border-soft);
       border-radius: var(--radius-card);
       padding: 28px 32px;
@@ -132,6 +133,7 @@
         <p class="micro-label" id="reveal-from"></p>
         <h1 class="reveal-title" id="reveal-title"></h1>
         <p class="reveal-openedline" id="reveal-openedline"></p>
+        <p class="reveal-music" id="reveal-music" hidden></p>
       </div>
       <div class="reveal-items" id="reveal-items"></div>
     </section>
@@ -143,7 +145,7 @@
       fetchReceivedCapsuleByShared, capsuleCoverUrl,
       ArkiveItemsCodec, renderCapsuleItems, createEl, ArkiveCeremonyWrites,
       fmtMedium, STATUS, DIRECTION, MAILBOX,
-    } from "./assets/arkive.js?v=ws7";
+    } from "./assets/arkive.js?v=ws8";
 
     const params = new URLSearchParams(window.location.search);
     const capsuleId = params.get("id");          // the SENDER row id (recipient can't read it)
@@ -281,6 +283,12 @@
       document.getElementById("reveal-title").textContent = row.title || "A capsule";
       if (row.opened_at) {
         document.getElementById("reveal-openedline").textContent = `Opened ${fmtMedium(row.opened_at)}`;
+      }
+      // music attribution (display-only; #237 — no picker on web)
+      if (row.music_song_title) {
+        const m = document.getElementById("reveal-music");
+        m.textContent = `♪ ${row.music_song_title}${row.music_artist_name ? ` · ${row.music_artist_name}` : ""}`;
+        m.hidden = false;
       }
 
       const itemsEl = document.getElementById("reveal-items");

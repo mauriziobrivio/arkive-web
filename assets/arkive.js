@@ -837,7 +837,8 @@ export const VIDEO_LIMIT_BYTES = Object.freeze({
   free: 300 * 1024 * 1024,   // Decision #239
   paid: 1024 * 1024 * 1024,  // = the bucket's hard cap
 });
-const AUDIO_LIMIT_BYTES = 25 * 1024 * 1024; // bucket cap
+const AUDIO_LIMIT_BYTES = 25 * 1024 * 1024;        // arkive-audio bucket cap
+const COVER_VIDEO_LIMIT_BYTES = 50 * 1024 * 1024;  // arkive-capsule-covers bucket cap
 
 let uploadsInFlight = 0;
 export function uploadsPending() { return uploadsInFlight > 0; }
@@ -884,6 +885,46 @@ async function recompressImage(file, { maxDimension = null, quality = 0.85 } = {
 const randomSuffix = () => Math.random().toString(16).slice(2, 10);
 const fileExtension = (name) => (name.split(".").pop() ?? "").toLowerCase();
 const fileMomentDate = (file) => new Date(file.lastModified || Date.now()).toISOString();
+
+/** Frame-0 poster from a video file/blob via a hidden <video> + canvas
+ *  (iOS uploads a transcoder poster; web grabs the first frame). Best-effort. */
+async function posterBlobFromVideo(source) {
+  const url = URL.createObjectURL(source);
+  try {
+    const video = document.createElement("video");
+    video.muted = true; video.playsInline = true; video.preload = "metadata";
+    video.src = url;
+    await new Promise((resolve, reject) => {
+      const fail = () => reject(new Error("video metadata load failed"));
+      video.addEventListener("loadeddata", resolve, { once: true });
+      video.addEventListener("error", fail, { once: true });
+      setTimeout(fail, 8000);
+    });
+    try { video.currentTime = Math.min(0.1, (video.duration || 1) / 2); } catch {}
+    await new Promise((resolve) => {
+      video.addEventListener("seeked", resolve, { once: true });
+      setTimeout(resolve, 1500);
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    return await new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/jpeg", 0.85));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Age-milestone release date — iOS ArkiveDateCalculator.ageMilestoneDate:
+ *  birth_date + age years. Returns ISO at local noon (avoids TZ date-flip),
+ *  or null when birth_date is missing. */
+export function ageMilestoneDate(birthDateStr, age) {
+  if (!birthDateStr || age == null) return null;
+  const d = new Date(`${birthDateStr}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setFullYear(d.getFullYear() + Number(age));
+  return d.toISOString();
+}
 
 export const ArkiveUploads = {
   /** Photo → moments-media, JPEG q0.85 + 480px thumb q0.75 (iOS parity). */
@@ -936,6 +977,113 @@ export const ArkiveUploads = {
     return uploadToBucket(BUCKET.photos, `${userId}/covers/${capsuleId}.jpg`, blob, {
       contentType: "image/jpeg", cacheControl: "31536000", upsert: true,
     });
+  },
+
+  /** Cover VIDEO → arkive-capsule-covers {uid}/{capsuleID}/video.mp4 +
+   *  poster.jpg (iOS path convention). Web can't transcode (iOS runs a
+   *  720p ladder), so accept mp4/quicktime ≤ the 50MB bucket cap as-is and
+   *  canvas-grab frame 0 for the poster. Returns the two storage paths →
+   *  cover_video_storage_path + cover_video_thumbnail_path. */
+  async coverVideo(file, userId, capsuleId) {
+    const ext = fileExtension(file.name);
+    const contentType = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime" }[ext];
+    if (!contentType) throw new Error("Cover videos must be .mp4 or .mov — other formats can’t be stored.");
+    if (file.size > COVER_VIDEO_LIMIT_BYTES) {
+      throw new Error("This cover video is over the 50 MB limit. Try a shorter clip or a smaller export.");
+    }
+    const uid = userId; const cid = capsuleId;       // already lowercase uuids
+    const videoStoragePath = await uploadToBucket(
+      BUCKET.capsuleCovers, `${uid}/${cid}/video.mp4`, file, { contentType, upsert: true },
+    );
+    let posterStoragePath = null;
+    try {
+      const poster = await posterBlobFromVideo(file);
+      if (poster) {
+        posterStoragePath = await uploadToBucket(
+          BUCKET.capsuleCovers, `${uid}/${cid}/poster.jpg`, poster,
+          { contentType: "image/jpeg", upsert: true },
+        );
+      }
+    } catch (err) {
+      // Poster is best-effort: a nil thumbnail just means the receiver
+      // frame-grabs locally (iOS ensureLocalPoster parity). Don't fail the cover.
+      console.warn("arkive: cover poster generation failed (non-fatal)", err);
+    }
+    return { videoStoragePath, posterStoragePath };
+  },
+
+  /** Recorded audio (MediaRecorder, audio/mp4 — capability-gated to
+   *  browsers that produce it; the bucket + iOS both accept mp4/AAC).
+   *  Stored as .m4a (mp4 audio container) like iOS. */
+  async recordedAudio(blob, userId) {
+    if (blob.size > AUDIO_LIMIT_BYTES) throw new Error("This recording is over the 25 MB limit — keep it under ~20 minutes.");
+    const itemId = crypto.randomUUID();
+    const storagePath = await uploadToBucket(
+      BUCKET.audio, `${userId}/audio/${itemId}.m4a`, blob, { contentType: "audio/mp4" },
+    );
+    return { itemId, storagePath, mimeType: "audio/mp4", fileSizeBytes: blob.size, momentDate: new Date().toISOString() };
+  },
+
+  /** Recorded video (MediaRecorder, video/mp4 — capability-gated). */
+  async recordedVideo(blob, userId, { isPaid }) {
+    const limit = isPaid ? VIDEO_LIMIT_BYTES.paid : VIDEO_LIMIT_BYTES.free;
+    if (blob.size > limit) {
+      const mb = Math.round(limit / 1048576);
+      throw new Error(`This recording is over the ${mb >= 1024 ? "1 GB" : `${mb} MB`} limit.`);
+    }
+    const itemId = crypto.randomUUID();
+    const storagePath = await uploadToBucket(
+      BUCKET.videos, `${userId}/videos/${Date.now()}_${randomSuffix()}.mp4`, blob, { contentType: "video/mp4" },
+    );
+    return { itemId, storagePath, mimeType: "video/mp4", fileSizeBytes: blob.size, momentDate: new Date().toISOString() };
+  },
+};
+
+/* ------------------------------------------------------------
+   In-browser recording (WP2) — capability-gated. MediaRecorder only
+   produces a cross-client-safe file where it can emit AAC/mp4 (Safari/
+   WebKit). On Chromium/Firefox it emits webm/ogg, which the arkive-audio/
+   arkive-videos buckets reject AND iOS can't play — so recording is hidden
+   there and file-attach remains the universal path. No backend change.
+   ------------------------------------------------------------ */
+
+const AUDIO_RECORD_MIMES = ["audio/mp4", "audio/aac"];
+const VIDEO_RECORD_MIMES = ["video/mp4;codecs=avc1", "video/mp4"];
+
+function firstSupportedMime(list) {
+  if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return null;
+  return list.find((m) => MediaRecorder.isTypeSupported(m)) ?? null;
+}
+
+export const ArkiveRecording = {
+  audioMime: () => firstSupportedMime(AUDIO_RECORD_MIMES),
+  videoMime: () => firstSupportedMime(VIDEO_RECORD_MIMES),
+  audioSupported() { return this.audioMime() != null; },
+  videoSupported() { return this.videoMime() != null; },
+
+  /** Start a recording session. Returns a controller; stop() resolves the
+   *  recorded Blob, cancel() discards. The caller is responsible for
+   *  uploading via ArkiveUploads.recordedAudio/recordedVideo. */
+  async start({ video = false } = {}) {
+    const mime = video ? this.videoMime() : this.audioMime();
+    if (!mime) throw new Error("Recording isn’t supported in this browser — attach a file instead.");
+    const stream = await navigator.mediaDevices.getUserMedia(video ? { audio: true, video: true } : { audio: true });
+    const recorder = new MediaRecorder(stream, { mimeType: mime });
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.start();
+    const stopTracks = () => stream.getTracks().forEach((t) => t.stop());
+    return {
+      stream,
+      stop: () => new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (fn, arg) => { if (done) return; done = true; clearTimeout(timer); stopTracks(); fn(arg); };
+        const timer = setTimeout(() => finish(reject, new Error("recording stop timed out")), 5000);
+        recorder.onstop = () => finish(resolve, new Blob(chunks, { type: mime }));
+        try { recorder.stop(); } catch (err) { finish(reject, err); }
+      }),
+      cancel: () => { try { recorder.stop(); } catch {} stopTracks(); },
+    };
   },
 };
 
@@ -992,6 +1140,8 @@ export const ArkiveCapsuleWriter = {
         ? RECIPIENT_ROUTING_STATE.localProfileOnly
         : RECIPIENT_ROUTING_STATE.awaitingRecipientAccount,
       cover_storage_path: draft.coverStoragePath ?? null,
+      cover_video_storage_path: draft.coverVideoStoragePath ?? null,
+      cover_video_thumbnail_path: draft.coverVideoThumbnailPath ?? null,
       items_json: ArkiveItemsCodec.encode(draft.items ?? []),
       letter_count: (draft.items ?? []).filter((i) => i.kind === ITEM_KIND.letter).length,
       moment_count: (draft.items ?? []).filter((i) => i.kind !== ITEM_KIND.letter).length,
@@ -1015,8 +1165,13 @@ export const ArkiveCapsuleWriter = {
   },
 
   /** Draft → sealed. Resolves the recipient account via the
-   *  find_account_by_email RPC (Phase-0 §R4) at seal time. */
-  async seal(draft, userId, { deliveryType, releaseAtISO, senderDisplayName, senderProfileId }) {
+   *  find_account_by_email RPC (Phase-0 §R4) at seal time.
+   *  delivery_type/_rule/release_at/recipient_age_target mirror iOS exactly:
+   *   - Specific Date / Send Now → rule 'date', release = chosen date
+   *   - Age Milestone            → rule 'date', release = birth_date + age, age set
+   *   - When They Join Arkive     → rule 'on_join', release null
+   *   - Manual Delivery           → rule 'manual', release null */
+  async seal(draft, userId, { deliveryType, releaseAtISO, ageTarget = null, senderDisplayName, senderProfileId }) {
     const email = draft.recipientEmail ?? draft.guestEmail ?? null;
     let recipientAccountId = null;
     if (email) {
@@ -1028,17 +1183,25 @@ export const ArkiveCapsuleWriter = {
         console.warn("arkive: recipient resolution failed (sealing unlinked)", err);
       }
     }
-    const deliveryRule = deliveryType === DELIVERY_TYPE.manualDelivery ? DELIVERY_RULE.manual : DELIVERY_RULE.date;
+    const deliveryRule =
+      deliveryType === DELIVERY_TYPE.manualDelivery ? DELIVERY_RULE.manual
+      : deliveryType === DELIVERY_TYPE.whenTheyJoinArkive ? DELIVERY_RULE.onJoin
+      : DELIVERY_RULE.date;
+    // When They Join has no fixed date; everything else uses the passed date.
+    const release = deliveryType === DELIVERY_TYPE.whenTheyJoinArkive ? null : releaseAtISO;
     const routing = recipientAccountId
       ? RECIPIENT_ROUTING_STATE.linkedToRecipientAccount
-      : (draft.guestEmail ? RECIPIENT_ROUTING_STATE.awaitingRecipientAccount : RECIPIENT_ROUTING_STATE.localProfileOnly);
+      : (draft.guestEmail || deliveryType === DELIVERY_TYPE.whenTheyJoinArkive
+          ? RECIPIENT_ROUTING_STATE.awaitingRecipientAccount
+          : RECIPIENT_ROUTING_STATE.localProfileOnly);
     const sealPatch = {
       state: STATE.sealed,
       status: STATUS.scheduled,
       sealed_at: new Date().toISOString(),
-      release_at: releaseAtISO,
+      release_at: release,
       delivery_type: deliveryType,
       delivery_rule: deliveryRule,
+      recipient_age_target: deliveryType === DELIVERY_TYPE.ageMilestone ? ageTarget : null,
       draft_step: null,
       title: draft.title ?? "",
       reveal_message: draft.revealMessage ?? null,
@@ -1046,6 +1209,8 @@ export const ArkiveCapsuleWriter = {
       letter_count: (draft.items ?? []).filter((i) => i.kind === ITEM_KIND.letter).length,
       moment_count: (draft.items ?? []).filter((i) => i.kind !== ITEM_KIND.letter).length,
       cover_storage_path: draft.coverStoragePath ?? null,
+      cover_video_storage_path: draft.coverVideoStoragePath ?? null,
+      cover_video_thumbnail_path: draft.coverVideoThumbnailPath ?? null,
       recipient_account_id: recipientAccountId,
       recipient_routing_state: routing,
       recipient_contact_hint: email,

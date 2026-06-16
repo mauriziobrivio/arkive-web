@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — New Capsule</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws7">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws8">
   <style>
     .create-main { max-width: 640px; }
     .step-label { margin-top: 8px; display: block; }
@@ -23,6 +23,7 @@
     .person-name { font-size: 16px; color: var(--ink); }
     .person-label { font-size: 13px; color: var(--ink-mute); }
     .guest-row { margin-top: 14px; }
+    .upload-row { margin-top: 14px; }
     .cover-preview {
       width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius-field);
       object-fit: cover; display: block; margin-top: 12px;
@@ -68,9 +69,17 @@
     </div>
 
     <div class="form-section">
-      <label class="field-label" for="cover">Cover photo (optional)</label>
-      <input class="field" id="cover" type="file" accept="image/*">
+      <span class="field-label">Cover (optional)</span>
+      <div class="upload-row">
+        <label class="field-label" for="cover">Photo</label>
+        <input class="field" id="cover" type="file" accept="image/*">
+      </div>
+      <div class="upload-row">
+        <label class="field-label" for="cover-video">…or a short video (.mp4 / .mov, up to 50 MB)</label>
+        <input class="field" id="cover-video" type="file" accept=".mp4,.mov,.m4v,video/mp4,video/quicktime">
+      </div>
       <img class="cover-preview" id="cover-preview" alt="" hidden>
+      <video class="cover-preview" id="cover-video-preview" muted playsinline controls hidden></video>
     </div>
 
     <p class="error-text create-error" id="error" role="alert" aria-live="polite"></p>
@@ -84,7 +93,7 @@
     import {
       bootSession, wireShell, supabase, fetchCapsuleById, ArkiveItemsCodec,
       ArkiveUploads, ArkiveCapsuleWriter, wireUploadGuard, uploadsPending, createEl,
-    } from "./assets/arkive.js?v=ws7";
+    } from "./assets/arkive.js?v=ws8";
 
     const boot = await bootSession();
     wireShell(boot);
@@ -98,6 +107,7 @@
 
     const draft = {
       id: draftId, title: "", items: [], coverStoragePath: null,
+      coverVideoStoragePath: null, coverVideoThumbnailPath: null,
       recipientProfileId: null, recipientName: null, recipientRelationship: null,
       recipientEmail: null, guestEmail: null, revealMessage: null, draftStep: 1,
     };
@@ -149,6 +159,8 @@
           draft.title = row.title ?? "";
           draft.items = ArkiveItemsCodec.decode(row.items_json);
           draft.coverStoragePath = row.cover_storage_path;
+          draft.coverVideoStoragePath = row.cover_video_storage_path;
+          draft.coverVideoThumbnailPath = row.cover_video_thumbnail_path;
           draft.recipientProfileId = row.recipient_profile_id;
           draft.recipientName = row.recipient_name;
           draft.recipientRelationship = row.recipient_relationship_snapshot;
@@ -171,19 +183,43 @@
       } catch (err) { console.error("arkive: draft load failed", err); }
     }
 
-    // cover pick → immediate upload (path is keyed by the draft id)
+    const photoPreview = document.getElementById("cover-preview");
+    const videoPreview = document.getElementById("cover-video-preview");
+
+    // cover PHOTO pick → immediate upload (replaces any video cover)
     document.getElementById("cover").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;
       errorEl.textContent = "";
       try {
         draft.coverStoragePath = await ArkiveUploads.cover(file, userId, draftId);
-        const preview = document.getElementById("cover-preview");
-        preview.src = URL.createObjectURL(file);
-        preview.hidden = false;
+        draft.coverVideoStoragePath = null;
+        draft.coverVideoThumbnailPath = null;
+        videoPreview.hidden = true; videoPreview.removeAttribute("src");
+        photoPreview.src = URL.createObjectURL(file);
+        photoPreview.hidden = false;
       } catch (err) {
         console.error("arkive: cover upload failed", err);
         errorEl.textContent = "The cover photo didn’t upload — try again.";
+      }
+    });
+
+    // cover VIDEO pick → upload video + generated poster (replaces any photo cover)
+    document.getElementById("cover-video").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      errorEl.textContent = "";
+      try {
+        const { videoStoragePath, posterStoragePath } = await ArkiveUploads.coverVideo(file, userId, draftId);
+        draft.coverVideoStoragePath = videoStoragePath;
+        draft.coverVideoThumbnailPath = posterStoragePath;
+        draft.coverStoragePath = null;
+        photoPreview.hidden = true; photoPreview.removeAttribute("src");
+        videoPreview.src = URL.createObjectURL(file);
+        videoPreview.hidden = false;
+      } catch (err) {
+        console.error("arkive: cover video upload failed", err);
+        errorEl.textContent = err.message || "The cover video didn’t upload — try again.";
       }
     });
 

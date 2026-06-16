@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — New Capsule</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws7">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws8">
   <style>
     .create-main { max-width: 640px; }
     .step-label { margin-top: 8px; display: block; }
@@ -72,9 +72,17 @@
         <p class="field-hint hevc-note" id="hevc-note" hidden>Some videos from Apple devices (HEVC) may not play in every browser — they’ll always play in the Arkive app.</p>
       </div>
       <div class="upload-row">
-        <label class="field-label" for="audio">Voice recording (.m4a / .mp3 file)</label>
+        <label class="field-label" for="audio">Voice (.m4a / .mp3 file)</label>
         <input class="field" id="audio" type="file" accept=".m4a,.mp3,audio/mp4,audio/mpeg">
-        <p class="field-hint">Recording lives in the Arkive app — here you can attach an audio file.</p>
+        <div id="audio-record-row" hidden style="margin-top:10px;display:flex;align-items:center;gap:12px">
+          <button class="btn btn-quiet" id="audio-record" type="button" aria-label="Record voice">● Record voice</button>
+          <span class="field-hint" id="audio-record-status" role="status" aria-live="polite"></span>
+        </div>
+      </div>
+      <div class="upload-row" id="video-record-row" hidden>
+        <label class="field-label">Video</label>
+        <button class="btn btn-quiet" id="video-record" type="button" aria-label="Record video">● Record video</button>
+        <span class="field-hint" id="video-record-status" role="status" aria-live="polite"></span>
       </div>
     </div>
 
@@ -96,8 +104,8 @@
     import {
       bootSession, wireShell, fetchCapsuleById, ArkiveItemsCodec, ArkiveUploads,
       ArkiveCapsuleWriter, insertDirectUploadMoment, wireUploadGuard, uploadsPending,
-      isComped, createEl, itemDisplayTitle, ITEM_KIND,
-    } from "./assets/arkive.js?v=ws7";
+      ArkiveRecording, isComped, createEl, itemDisplayTitle, ITEM_KIND,
+    } from "./assets/arkive.js?v=ws8";
 
     const boot = await bootSession();
     wireShell(boot);
@@ -115,6 +123,8 @@
     const draft = {
       id: row.id, title: row.title ?? "", items: ArkiveItemsCodec.decode(row.items_json),
       coverStoragePath: row.cover_storage_path,
+      coverVideoStoragePath: row.cover_video_storage_path,
+      coverVideoThumbnailPath: row.cover_video_thumbnail_path,
       recipientProfileId: row.recipient_profile_id, recipientName: row.recipient_name,
       recipientRelationship: row.recipient_relationship_snapshot,
       recipientEmail: row.recipient_contact_hint, guestEmail: row.guest_delivery_email,
@@ -188,6 +198,65 @@
       event.target.value = "";
     });
 
+    // In-browser recording — shown only where MediaRecorder yields a
+    // cross-client-safe AAC/mp4 container (Safari/WebKit). Elsewhere the
+    // file-attach inputs above remain the path. (WP2 §b / Decision #239.)
+    wireRecorder({
+      supported: ArkiveRecording.audioSupported(),
+      rowId: "audio-record-row", btnId: "audio-record", statusId: "audio-record-status",
+      label: "Record voice", video: false,
+      upload: (blob) => ArkiveUploads.recordedAudio(blob, userId),
+      kind: ITEM_KIND.audio, mediaType: "audio", pathKey: "audioStoragePath",
+    });
+    wireRecorder({
+      supported: ArkiveRecording.videoSupported(),
+      rowId: "video-record-row", btnId: "video-record", statusId: "video-record-status",
+      label: "Record video", video: true,
+      upload: (blob) => ArkiveUploads.recordedVideo(blob, userId, { isPaid: isComped() }),
+      kind: ITEM_KIND.video, mediaType: "video", pathKey: "videoStoragePath",
+    });
+
+    function wireRecorder({ supported, rowId, btnId, statusId, label, video, upload, kind, mediaType, pathKey }) {
+      if (!supported) return;
+      const row = document.getElementById(rowId);
+      const btn = document.getElementById(btnId);
+      const status = document.getElementById(statusId);
+      row.hidden = false;
+      let session = null;
+      btn.addEventListener("click", async () => {
+        if (!session) {
+          errorEl.textContent = "";
+          try {
+            session = await ArkiveRecording.start({ video });
+            btn.textContent = "■ Stop & add";
+            status.textContent = "Recording…";
+          } catch (err) {
+            console.error("arkive: recorder start failed", err);
+            errorEl.textContent = err.message || "Couldn’t start recording — check microphone/camera permission.";
+            session = null;
+          }
+          return;
+        }
+        // stop → upload → item
+        btn.disabled = true; status.textContent = "Saving…";
+        try {
+          const blob = await session.stop();
+          session = null;
+          const up = await upload(blob);
+          await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType, storagePath: up.storagePath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+          draft.items.push({ id: up.itemId, kind, title: "", subtitle: "", momentDate: up.momentDate, [pathKey]: up.storagePath });
+          renderItems();
+          status.textContent = "";
+        } catch (err) {
+          console.error("arkive: recording upload failed", err);
+          errorEl.textContent = err.message || "The recording didn’t save — try again.";
+          status.textContent = "";
+        } finally {
+          btn.disabled = false; btn.textContent = `● ${label}`;
+        }
+      });
+    }
+
     document.getElementById("continue").addEventListener("click", async () => {
       errorEl.textContent = "";
       if (uploadsPending()) { errorEl.textContent = "Still uploading — keep this tab open a moment longer."; return; }
@@ -205,19 +274,46 @@
       }
     });
 
+    function moveItem(from, to) {
+      if (to < 0 || to >= draft.items.length) return;
+      const [it] = draft.items.splice(from, 1);
+      draft.items.splice(to, 0, it);
+      renderItems();
+    }
+
+    let dragFrom = null;
     function renderItems() {
       const rows = document.getElementById("item-rows");
       rows.textContent = "";
       document.getElementById("no-items").hidden = draft.items.length > 0;
+      const multi = draft.items.length > 1;
       draft.items.forEach((item, index) => {
         const rowEl = createEl("div", "card item-row");
+        rowEl.draggable = multi;
+        // drag reorder (mouse)
+        if (multi) {
+          rowEl.addEventListener("dragstart", () => { dragFrom = index; rowEl.style.opacity = "0.5"; });
+          rowEl.addEventListener("dragend", () => { dragFrom = null; rowEl.style.opacity = ""; });
+          rowEl.addEventListener("dragover", (e) => e.preventDefault());
+          rowEl.addEventListener("drop", (e) => { e.preventDefault(); if (dragFrom !== null && dragFrom !== index) moveItem(dragFrom, index); });
+        }
         rowEl.appendChild(createEl("span", "micro-label", item.kind === ITEM_KIND.textNote ? "Note" : item.kind));
         const label = item.kind === ITEM_KIND.letter
           ? (item.title || `${item.subtitle.slice(0, 60)}…`)
           : (itemDisplayTitle(item) || "Added just now");
         rowEl.appendChild(createEl("span", "item-row-title", label));
+        // keyboard-accessible reorder (drag isn't keyboard-reachable)
+        if (multi) {
+          const up = createEl("button", "item-remove", "↑");
+          up.type = "button"; up.setAttribute("aria-label", `Move ${label} up`); up.disabled = index === 0;
+          up.addEventListener("click", () => moveItem(index, index - 1));
+          const down = createEl("button", "item-remove", "↓");
+          down.type = "button"; down.setAttribute("aria-label", `Move ${label} down`); down.disabled = index === draft.items.length - 1;
+          down.addEventListener("click", () => moveItem(index, index + 1));
+          rowEl.appendChild(up); rowEl.appendChild(down);
+        }
         const remove = createEl("button", "item-remove", "Remove");
-        remove.type = "button";
+        remove.type = "button"; remove.setAttribute("aria-label", `Remove ${label}`);
         remove.addEventListener("click", () => { draft.items.splice(index, 1); renderItems(); });
         rowEl.appendChild(remove);
         rows.appendChild(rowEl);
