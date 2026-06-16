@@ -9,7 +9,7 @@
   <meta property="og:title" content="Arkive">
   <meta property="og:description" content="Your capsules, on the web. Sign in to your Arkive.">
   <meta name="description" content="Your capsules, on the web. Sign in to your Arkive.">
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws8">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws9">
   <style>
     .login-wrap {
       min-height: 100vh;
@@ -155,20 +155,24 @@
   <script type="module">
     import {
       supabase, currentSession, signUpRecipient, requestPasswordReset,
-    } from "./assets/arkive.js?v=ws8";
+    } from "./assets/arkive.js?v=ws9";
 
     const params = new URLSearchParams(location.search);
     const shared = params.get("shared");
     const capsuleId = params.get("id");
+    const joinCapsule = params.get("join");            // contributor-invite context (WP3)
     const emParam = params.get("em");
     const initialMode = params.get("mode");           // 'signup' | 'signin' | null
-    // Recipient context = arrived from a capsule open link (carries `shared`).
-    // B5(b): the create-account surface appears ONLY in this context.
-    const recipientContext = !!shared;
+    // Invited context = arrived from a capsule open link (`shared`) OR a
+    // contributor-invite (`join`). B5(b): the create-account surface appears
+    // ONLY in an invited context — the invite is the authorization.
+    const recipientContext = !!shared || !!joinCapsule;
 
     // Where to land after a successful auth.
-    const postAuthURL = recipientContext
+    const postAuthURL = shared
       ? `./open.html?shared=${encodeURIComponent(shared)}${capsuleId ? `&id=${encodeURIComponent(capsuleId)}` : ""}`
+      : joinCapsule
+      ? `./join-capsule.html?capsule=${encodeURIComponent(joinCapsule)}`
       : "./capsules.html";
     // Where the signup-confirmation email should return the recipient.
     // (Must be in the Auth redirect allowlist, B4.) Host-agnostic.
@@ -192,13 +196,13 @@
     function show(mode) {
       for (const [name, el] of Object.entries(views)) el.hidden = name !== mode;
       if (mode === "signin") {
-        headTitle.textContent = recipientContext ? "Open your capsule." : "Welcome back.";
-        headSub.textContent = recipientContext
-          ? "Sign in to open the capsule waiting for you."
-          : "Sign in to your Arkive.";
+        headTitle.textContent = joinCapsule ? "Join the capsule." : recipientContext ? "Open your capsule." : "Welcome back.";
+        headSub.textContent = joinCapsule
+          ? "Sign in to contribute to the capsule you were invited to."
+          : recipientContext ? "Sign in to open the capsule waiting for you." : "Sign in to your Arkive.";
       } else if (mode === "signup") {
         headTitle.textContent = "Create your Arkive.";
-        headSub.textContent = "A free account, so you can open your capsule.";
+        headSub.textContent = joinCapsule ? "A free account, so you can contribute." : "A free account, so you can open your capsule.";
       } else {
         headTitle.textContent = "Reset your password.";
         headSub.textContent = "We’ll email you a link to set a new one.";

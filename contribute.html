@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — Contribute</title>
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws9">
+  <style>
+    .create-main { max-width: 640px; }
+    .step-label { margin-top: 8px; display: block; }
+    .step-title { margin-top: 10px; }
+    .form-section { margin-top: 34px; }
+    .letter-compose .field + .field { margin-top: 12px; }
+    .letter-compose textarea.field { min-height: 170px; resize: vertical; line-height: 1.7; }
+    .letter-compose .btn { margin-top: 12px; }
+    .upload-row { margin-top: 14px; }
+    .field-hint { font-size: 13px; color: var(--ink-mute); margin-top: 6px; }
+    .upload-banner {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--ink); color: var(--paper);
+      padding: 12px 22px; border-radius: 999px; font-size: 14px;
+      box-shadow: 0 10px 30px rgba(20, 17, 14, 0.25);
+    }
+    .item-rows { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .item-row { display: flex; align-items: baseline; gap: 14px; padding: 12px 16px; }
+    .item-row .micro-label { flex: 0 0 64px; }
+    .item-row-title { flex: 1; font-size: 15px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .done-row { margin-top: 40px; }
+  </style>
+</head>
+<body hidden>
+  <header class="shell-header">
+    <a class="wordmark" href="./capsules.html">Arkive</a>
+    <nav class="shell-nav" aria-label="Primary">
+      <a href="./capsules.html">Capsules</a>
+      <a href="./people.html">People</a>
+      <a href="./settings.html">Settings</a>
+    </nav>
+    <div class="shell-account">
+      <span data-account-name></span>
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="shell-main create-main">
+    <a class="back-link" href="./capsules.html">← Capsules</a>
+
+    <div class="empty-state" id="contribute-loading" style="margin-top:48px"><p class="empty-title">Opening the capsule…</p></div>
+    <div class="empty-state" id="contribute-unavailable" hidden style="margin-top:48px">
+      <p class="empty-title">This capsule isn’t available to contribute to.</p>
+      <p class="empty-hint">The invitation may have been withdrawn, or it’s already sealed.</p>
+    </div>
+
+    <div id="contribute-body" hidden>
+      <span class="micro-label step-label">Contributing</span>
+      <h1 class="step-title" id="contribute-title">A capsule</h1>
+      <p class="field-hint" id="contribute-sub">Add your photos, videos, and words. The owner seals it when everyone’s done.</p>
+
+      <div class="form-section letter-compose">
+        <span class="field-label">Write a letter</span>
+        <input class="field" id="letter-title" type="text" placeholder="Letter title (optional)">
+        <textarea class="field" id="letter-body" placeholder="Write what you want them to read…" spellcheck="true"></textarea>
+        <button class="btn btn-quiet" id="add-letter" type="button">Add Letter</button>
+      </div>
+
+      <div class="form-section">
+        <span class="field-label">Add moments</span>
+        <div class="upload-row">
+          <label class="field-label" for="photos">Photos</label>
+          <input class="field" id="photos" type="file" accept="image/*" multiple>
+        </div>
+        <div class="upload-row">
+          <label class="field-label" for="video">Video (.mp4 / .mov · up to <span id="video-limit"></span>)</label>
+          <input class="field" id="video" type="file" accept=".mp4,.mov,.m4v,video/mp4,video/quicktime">
+          <p class="field-hint hevc-note" id="hevc-note" hidden>Some videos from Apple devices (HEVC) may not play in every browser — they’ll always play in the Arkive app.</p>
+        </div>
+        <div class="upload-row">
+          <label class="field-label" for="audio">Voice (.m4a / .mp3 file)</label>
+          <input class="field" id="audio" type="file" accept=".m4a,.mp3,audio/mp4,audio/mpeg">
+          <div id="audio-record-row" hidden style="margin-top:10px;display:flex;align-items:center;gap:12px">
+            <button class="btn btn-quiet" id="audio-record" type="button" aria-label="Record voice">● Record voice</button>
+            <span class="field-hint" id="audio-record-status" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <span class="field-label">In this capsule</span>
+        <div class="item-rows" id="item-rows"></div>
+        <p class="field-hint" id="no-items">Nothing here yet — add a letter or a moment above.</p>
+      </div>
+
+      <p class="error-text" id="error" role="alert" aria-live="polite"></p>
+      <div class="done-row"><a class="btn btn-primary" href="./capsules.html">Done for now</a></div>
+      <div class="upload-banner" id="upload-banner" hidden>Uploading — keep this tab open.</div>
+    </div>
+  </main>
+
+  <script type="module">
+    import {
+      bootSession, wireShell, fetchCapsuleById, ArkiveItemsCodec, ArkiveUploads,
+      ArkiveContributors, ArkiveRecording, insertDirectUploadMoment, wireUploadGuard,
+      uploadsPending, isComped, createEl, itemDisplayTitle, STATE, ITEM_KIND,
+    } from "./assets/arkive.js?v=ws9";
+
+    const boot = await bootSession();
+    wireShell(boot);
+    wireUploadGuard();
+    const userId = boot.user.id;
+
+    const params = new URLSearchParams(location.search);
+    const capsuleId = params.get("id");
+    const loadingEl = document.getElementById("contribute-loading");
+    const errorEl = document.getElementById("error");
+
+    const row = capsuleId ? await fetchCapsuleById(capsuleId) : null;
+    loadingEl.hidden = true;
+    if (!row || row.state !== STATE.draft) {
+      // Not authorized to read (RLS), missing, or already sealed → no contribute.
+      document.getElementById("contribute-unavailable").hidden = false;
+      throw new Error("not contributable");
+    }
+
+    document.getElementById("contribute-body").hidden = false;
+    document.getElementById("contribute-title").textContent = row.title || "A capsule";
+    document.getElementById("video-limit").textContent = isComped() ? "1 GB" : "300 MB";
+
+    // local working copy. addItem re-reads the shared row on each add, so a
+    // contributor picks up others' items; truly simultaneous adds still
+    // last-write-win — same read-modify-write the iOS contributor path uses
+    // (a version column / per-item table would be a future backend hardening).
+    let items = ArkiveItemsCodec.decode(row.items_json);
+    renderItems();
+
+    const banner = document.getElementById("upload-banner");
+    setInterval(() => { banner.hidden = !uploadsPending(); }, 400);
+
+    async function commit(item) {
+      const encoded = await ArkiveContributors.addItem(capsuleId, item);
+      items = ArkiveItemsCodec.decode(encoded);   // refresh from the merged server array
+      renderItems();
+    }
+
+    document.getElementById("add-letter").addEventListener("click", async () => {
+      const body = document.getElementById("letter-body").value;
+      if (!body.trim()) { errorEl.textContent = "The letter needs some words first."; return; }
+      errorEl.textContent = "";
+      try {
+        await commit({ id: crypto.randomUUID(), kind: ITEM_KIND.letter, title: document.getElementById("letter-title").value.trim(), subtitle: body });
+        document.getElementById("letter-title").value = "";
+        document.getElementById("letter-body").value = "";
+      } catch (err) { console.error(err); errorEl.textContent = err.message || "Couldn’t add the letter — try again."; }
+    });
+
+    document.getElementById("photos").addEventListener("change", async (event) => {
+      errorEl.textContent = "";
+      for (const file of Array.from(event.target.files ?? [])) {
+        try {
+          const up = await ArkiveUploads.photo(file, userId);
+          await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType: "photo", storagePath: up.storagePath, thumbnailPath: up.thumbnailPath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+          await commit({ id: up.itemId, kind: ITEM_KIND.photo, title: "", subtitle: "", momentDate: up.momentDate, imageStoragePath: up.storagePath, photoStoragePath: up.storagePath });
+        } catch (err) { console.error(err); errorEl.textContent = err.message || "A photo didn’t add — try again."; }
+      }
+      event.target.value = "";
+    });
+
+    document.getElementById("video").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      errorEl.textContent = "";
+      try {
+        const up = await ArkiveUploads.video(file, userId, { isPaid: isComped() });
+        await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType: "video", storagePath: up.storagePath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+        document.getElementById("hevc-note").hidden = !up.quicktime;
+        await commit({ id: up.itemId, kind: ITEM_KIND.video, title: "", subtitle: "", momentDate: up.momentDate, videoStoragePath: up.storagePath });
+      } catch (err) { console.error(err); errorEl.textContent = err.message || "The video didn’t add — try again."; }
+      event.target.value = "";
+    });
+
+    document.getElementById("audio").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      errorEl.textContent = "";
+      try {
+        const up = await ArkiveUploads.audio(file, userId);
+        await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType: "audio", storagePath: up.storagePath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+        await commit({ id: up.itemId, kind: ITEM_KIND.audio, title: "", subtitle: "", momentDate: up.momentDate, audioStoragePath: up.storagePath });
+      } catch (err) { console.error(err); errorEl.textContent = err.message || "The recording didn’t add — try again."; }
+      event.target.value = "";
+    });
+
+    // gated voice recording (same cross-client-safe path as create-2)
+    if (ArkiveRecording.audioSupported()) {
+      const recRow = document.getElementById("audio-record-row");
+      const recBtn = document.getElementById("audio-record");
+      const recStatus = document.getElementById("audio-record-status");
+      recRow.hidden = false;
+      let recSession = null;
+      recBtn.addEventListener("click", async () => {
+        if (!recSession) {
+          errorEl.textContent = "";
+          try { recSession = await ArkiveRecording.start({ video: false }); recBtn.textContent = "■ Stop & add"; recStatus.textContent = "Recording…"; }
+          catch (err) { console.error(err); errorEl.textContent = err.message || "Couldn’t start recording."; recSession = null; }
+          return;
+        }
+        recBtn.disabled = true; recStatus.textContent = "Saving…";
+        try {
+          const blob = await recSession.stop(); recSession = null;
+          const up = await ArkiveUploads.recordedAudio(blob, userId);
+          await insertDirectUploadMoment({ itemId: up.itemId, userId, mediaType: "audio", storagePath: up.storagePath, mimeType: up.mimeType, fileSizeBytes: up.fileSizeBytes, momentDate: up.momentDate });
+          await commit({ id: up.itemId, kind: ITEM_KIND.audio, title: "", subtitle: "", momentDate: up.momentDate, audioStoragePath: up.storagePath });
+          recStatus.textContent = "";
+        } catch (err) { console.error(err); errorEl.textContent = err.message || "The recording didn’t add — try again."; recStatus.textContent = ""; }
+        finally { recBtn.disabled = false; recBtn.textContent = "● Record voice"; }
+      });
+    }
+
+    function renderItems() {
+      const rows = document.getElementById("item-rows");
+      rows.textContent = "";
+      document.getElementById("no-items").hidden = items.length > 0;
+      for (const item of items) {
+        const rowEl = createEl("div", "card item-row");
+        rowEl.appendChild(createEl("span", "micro-label", item.kind === ITEM_KIND.textNote ? "Note" : item.kind));
+        const label = item.kind === ITEM_KIND.letter
+          ? (item.title || `${item.subtitle.slice(0, 60)}…`)
+          : (itemDisplayTitle(item) || "Added");
+        rowEl.appendChild(createEl("span", "item-row-title", label));
+        rows.appendChild(rowEl);
+      }
+    }
+  </script>
+</body>
+</html>

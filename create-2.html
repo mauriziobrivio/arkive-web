@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — New Capsule</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws8">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws9">
   <style>
     .create-main { max-width: 640px; }
     .step-label { margin-top: 8px; display: block; }
@@ -87,6 +87,17 @@
     </div>
 
     <div class="form-section">
+      <span class="field-label">Invite contributors (optional)</span>
+      <p class="field-hint">Invite someone to add their own photos, videos, and words before you seal.</p>
+      <div class="upload-row" style="display:flex;gap:10px;align-items:flex-start">
+        <input class="field" id="invite-email" type="email" placeholder="their@email.com" spellcheck="false" style="flex:1">
+        <button class="btn btn-quiet" id="invite-btn" type="button">Invite</button>
+      </div>
+      <p class="field-hint" id="invite-status" role="status" aria-live="polite"></p>
+      <div class="item-rows" id="contrib-list"></div>
+    </div>
+
+    <div class="form-section">
       <span class="field-label">In this capsule</span>
       <div class="item-rows" id="item-rows"></div>
       <p class="field-hint" id="no-items">Nothing yet — add a letter or some moments above.</p>
@@ -103,9 +114,9 @@
   <script type="module">
     import {
       bootSession, wireShell, fetchCapsuleById, ArkiveItemsCodec, ArkiveUploads,
-      ArkiveCapsuleWriter, insertDirectUploadMoment, wireUploadGuard, uploadsPending,
-      ArkiveRecording, isComped, createEl, itemDisplayTitle, ITEM_KIND,
-    } from "./assets/arkive.js?v=ws8";
+      ArkiveCapsuleWriter, ArkiveContributors, insertDirectUploadMoment, wireUploadGuard,
+      uploadsPending, ArkiveRecording, isComped, createEl, itemDisplayTitle, ITEM_KIND, CONTRIBUTOR_STATUS,
+    } from "./assets/arkive.js?v=ws9";
 
     const boot = await bootSession();
     wireShell(boot);
@@ -135,6 +146,43 @@
     const banner = document.getElementById("upload-banner");
     const bannerTimer = setInterval(() => { banner.hidden = !uploadsPending(); }, 400);
     renderItems();
+
+    // Invite contributors (WP3). The draft row already exists (saved in
+    // create-1), so the capsule_contributors FK + is_collaborative trigger
+    // resolve. Inviting marks the capsule collaborative server-side.
+    const inviteStatus = document.getElementById("invite-status");
+    renderContributors();
+    document.getElementById("invite-btn").addEventListener("click", async () => {
+      const field = document.getElementById("invite-email");
+      const email = field.value.trim().toLowerCase();
+      inviteStatus.textContent = "";
+      if (!email) { inviteStatus.textContent = "Enter an email to invite."; return; }
+      const btn = document.getElementById("invite-btn");
+      btn.disabled = true;
+      try {
+        await ArkiveContributors.invite(draft.id, email, { capsuleTitle: draft.title, recipientName: draft.recipientName }, userId);
+        field.value = "";
+        inviteStatus.textContent = `Invited ${email}.`;
+        await renderContributors();
+      } catch (err) {
+        console.error("arkive: invite failed", err);
+        inviteStatus.textContent = err.message || "Couldn’t send that invite — try again.";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    async function renderContributors() {
+      const list = document.getElementById("contrib-list");
+      list.textContent = "";
+      const rows = await ArkiveContributors.list(draft.id);
+      for (const c of rows) {
+        const rowEl = createEl("div", "card item-row");
+        rowEl.appendChild(createEl("span", "micro-label", c.status === CONTRIBUTOR_STATUS.accepted ? "Joined" : "Invited"));
+        rowEl.appendChild(createEl("span", "item-row-title", c.display_name || c.invited_email || ""));
+        list.appendChild(rowEl);
+      }
+    }
 
     document.getElementById("add-letter").addEventListener("click", () => {
       const body = document.getElementById("letter-body").value;

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arkive — An invitation to contribute</title>
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws9">
+  <style>
+    .join-main { max-width: 620px; }
+    .state-block { margin-top: 60px; text-align: center; }
+    .state-block .empty-title { font-size: 22px; }
+    .state-block .empty-hint { max-width: 460px; margin: 12px auto 0; line-height: 1.6; }
+    .join-actions { margin-top: 30px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+    .join-toggle { margin-top: 16px; font-size: 14px; color: var(--ink-soft); }
+  </style>
+</head>
+<body hidden>
+  <header class="shell-header">
+    <a class="wordmark" href="./capsules.html">Arkive</a>
+    <nav class="shell-nav" aria-label="Primary" id="shell-nav" hidden>
+      <a href="./capsules.html">Capsules</a>
+      <a href="./people.html">People</a>
+      <a href="./settings.html">Settings</a>
+    </nav>
+    <div class="shell-account" id="shell-account" hidden>
+      <span data-account-name></span>
+      <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="shell-main join-main">
+    <div class="empty-state state-block" id="join-loading">
+      <p class="empty-title">Looking up your invitation…</p>
+    </div>
+
+    <!-- no session: contents-free teaser into the invited-signup flow -->
+    <div class="state-block" id="join-teaser" hidden>
+      <span class="micro-label">An invitation</span>
+      <p class="empty-title">You’ve been invited to add to a capsule.</p>
+      <p class="empty-hint">Create a free account to contribute your photos, videos, and words.</p>
+      <p class="join-actions">
+        <a class="btn btn-primary" id="teaser-create" href="./index.html">Create a free account to join</a>
+      </p>
+      <p class="join-toggle">Already have an account? <a class="link-accent" id="teaser-signin" href="./index.html">Sign in</a></p>
+    </div>
+
+    <!-- accepted: contribute or decline -->
+    <div class="state-block" id="join-accepted" hidden>
+      <span class="micro-label">Contributor</span>
+      <p class="empty-title" id="accepted-title">You’re a contributor.</p>
+      <p class="empty-hint" id="accepted-hint"></p>
+      <p class="join-actions">
+        <a class="btn btn-primary" id="contribute-link" href="#" hidden>Add to this capsule</a>
+        <button class="btn btn-quiet" id="decline-btn" type="button">Decline</button>
+      </p>
+    </div>
+
+    <div class="state-block" id="join-declined" hidden>
+      <p class="empty-title">You’ve declined this invitation.</p>
+      <p class="join-actions"><a class="btn btn-quiet" href="./capsules.html">Go to your Arkive</a></p>
+    </div>
+
+    <div class="state-block" id="join-mismatch" hidden>
+      <p class="empty-title">This invitation isn’t for this account.</p>
+      <p class="empty-hint">It may have been sent to a different email. Sign out and sign in with the address it was sent to.</p>
+      <p class="join-actions"><button class="btn btn-quiet" data-sign-out type="button">Sign Out</button></p>
+    </div>
+  </main>
+
+  <script type="module">
+    import {
+      bootSession, wireShell, currentSession, fetchCapsuleById,
+      ArkiveContributors, createEl, STATE, CONTRIBUTOR_STATUS,
+    } from "./assets/arkive.js?v=ws9";
+
+    const params = new URLSearchParams(location.search);
+    const capsuleId = params.get("capsule");
+    const em = params.get("em");
+    const loadingEl = document.getElementById("join-loading");
+
+    const session = await currentSession();
+    if (!session) {
+      renderTeaser();
+    } else {
+      // boot runs claim_my_pending_invitations → pending invites for this
+      // email are accepted (user_id + status='Accepted') before we read.
+      const boot = await bootSession();
+      document.getElementById("shell-nav").hidden = false;
+      document.getElementById("shell-account").hidden = false;
+      wireShell(boot);
+      const userId = boot.user.id;
+      loadingEl.hidden = true;
+
+      if (!capsuleId) { showMismatch(); }
+      else {
+        const invite = await ArkiveContributors.myInvite(capsuleId, userId);
+        if (!invite) {
+          showMismatch();
+        } else if (invite.status === CONTRIBUTOR_STATUS.declined) {
+          document.getElementById("join-declined").hidden = false;
+        } else {
+          await showAccepted(invite, userId);
+        }
+      }
+    }
+
+    function renderTeaser() {
+      loadingEl.hidden = true;
+      const ctx = new URLSearchParams({ join: capsuleId ?? "" });
+      if (em) ctx.set("em", em);
+      document.getElementById("teaser-create").href = `./index.html?mode=signup&${ctx.toString()}`;
+      document.getElementById("teaser-signin").href = `./index.html?mode=signin&${ctx.toString()}`;
+      document.getElementById("join-teaser").hidden = false;
+      document.body.removeAttribute("hidden");
+    }
+
+    async function showAccepted(invite, userId) {
+      const block = document.getElementById("join-accepted");
+      block.hidden = false;
+      let title = "a capsule";
+      let sealed = false;
+      const row = await fetchCapsuleById(capsuleId);   // RLS: contributor can read post-accept
+      if (row) { title = row.title || "a capsule"; sealed = row.state !== STATE.draft; }
+      document.getElementById("accepted-title").textContent = `You’re contributing to “${title}”.`;
+      const contributeLink = document.getElementById("contribute-link");
+      if (sealed) {
+        document.getElementById("accepted-hint").textContent = "This capsule has been sealed, so it can’t take new additions — thank you for being part of it.";
+      } else {
+        document.getElementById("accepted-hint").textContent = "Add your photos, videos, and words. The owner seals it when everyone’s done.";
+        contributeLink.href = `./contribute.html?id=${encodeURIComponent(capsuleId)}`;
+        contributeLink.hidden = false;
+      }
+      document.getElementById("decline-btn").addEventListener("click", async () => {
+        const btn = document.getElementById("decline-btn");
+        btn.disabled = true;
+        try {
+          await ArkiveContributors.decline(invite.id, userId);
+          block.hidden = true;
+          document.getElementById("join-declined").hidden = false;
+        } catch (err) {
+          console.error("arkive: decline failed", err);
+          btn.disabled = false;
+        }
+      });
+    }
+
+    function showMismatch() {
+      loadingEl.hidden = true;
+      document.getElementById("join-mismatch").hidden = false;
+    }
+  </script>
+</body>
+</html>

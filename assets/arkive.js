@@ -1361,5 +1361,129 @@ export const ArkiveDeliveryEngine = {
   },
 };
 
+/* ------------------------------------------------------------
+   Collaborative contributors (WP3) — all zero-backend-change.
+   Status strings are CAPITALIZED ('Invited'/'Accepted'/'Declined')
+   exactly as iOS writes them; the lowercase column default is a
+   footgun the triggers + claim RPC don't honor, so we always write
+   status explicitly. is_collaborative + contributor_count are
+   server-trigger-managed — the client never writes them.
+   ------------------------------------------------------------ */
+
+export const ArkiveContributors = {
+  /** Owner invites a contributor: INSERT the capsule_contributors row
+   *  (RLS capsule_contributors_insert: auth.uid() = invited_by), then send
+   *  the invite email via the Edge Function. The capsule must already exist
+   *  (its draft row) so the FK + the is_collaborative trigger resolve. */
+  async invite(capsuleId, email, { capsuleTitle, recipientName } = {}, userId) {
+    const invited_email = email.trim().toLowerCase();
+    if (!invited_email) throw new Error("Enter an email address to invite.");
+    const { data: invite, error } = await supabase.from("capsule_contributors").insert({
+      capsule_id: capsuleId,
+      invited_by: userId,
+      invited_email,
+      status: CONTRIBUTOR_STATUS.invited,   // 'Invited' (Capitalized — never the lowercase default)
+      role: CONTRIBUTOR_ROLE.contributor,   // 'Contributor'
+      invited_at: new Date().toISOString(),
+    }).select("id, invited_email, status").single();
+    if (error) {
+      if (error.code === "23505") throw new Error("That person is already invited to this capsule.");
+      throw error;
+    }
+    // Email is best-effort — the row (and is_collaborative) already landed.
+    try {
+      await this.invokeInviteEmail({
+        capsule_id: capsuleId, invited_email,
+        capsule_title: capsuleTitle ?? "", recipient_name: recipientName ?? "",
+        invite_id: invite.id,
+      });
+    } catch (err) {
+      console.warn("arkive: send-contributor-invite failed (invite row saved)", err);
+    }
+    return invite;
+  },
+
+  /** Raw-fetch invoke (Authorization + Content-Type only) — supabase-js
+   *  functions.invoke adds x-client-info, which this function's CORS
+   *  allow-list rejects. Server ignores client inviter_name (anti-phishing). */
+  async invokeInviteEmail(payload) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error("no session for contributor-invite invoke");
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/send-contributor-invite`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const parsed = await response.json().catch(() => null);
+    if (typeof parsed?.success !== "boolean") {
+      throw new Error(`unexpected send-contributor-invite response shape (HTTP ${response.status})`);
+    }
+    return parsed;
+  },
+
+  /** The caller's own contributor row for a capsule — visible only AFTER
+   *  the boot-time claim_my_pending_invitations set user_id (RLS
+   *  capsule_contributors_select: owner OR user_id = auth.uid()). */
+  async myInvite(capsuleId, userId) {
+    const { data, error } = await supabase.from("capsule_contributors")
+      .select("id, capsule_id, status, role, invited_email, display_name")
+      .eq("capsule_id", capsuleId).eq("user_id", userId).maybeSingle();
+    if (error) { console.error("arkive: myInvite fetch failed", error); return null; }
+    return data;
+  },
+
+  /** Contributors of a capsule (owner or accepted-contributor visibility). */
+  async list(capsuleId) {
+    const { data, error } = await supabase.from("capsule_contributors")
+      .select("id, invited_email, display_name, status, role")
+      .eq("capsule_id", capsuleId)
+      .in("status", [CONTRIBUTOR_STATUS.invited, CONTRIBUTOR_STATUS.accepted]);
+    if (error) { console.error("arkive: contributors list failed", error); return []; }
+    return data ?? [];
+  },
+
+  /** Decline an invite the caller has already claimed (user_id set at boot).
+   *  Status-only UPDATE — the role-authority trigger fires only on role
+   *  changes, so this passes under capsule_contributors_update_self. */
+  async decline(rowId, userId) {
+    const { error } = await supabase.from("capsule_contributors")
+      .update({ status: CONTRIBUTOR_STATUS.declined })
+      .eq("id", rowId).eq("user_id", userId);
+    if (error) throw error;
+  },
+
+  /** Optionally set the caller's display_name on their own contributor row
+   *  (iOS sets it on accept). Self-row UPDATE, role unchanged. */
+  async setMyDisplayName(rowId, userId, displayName) {
+    if (!displayName) return;
+    const { error } = await supabase.from("capsule_contributors")
+      .update({ display_name: displayName })
+      .eq("id", rowId).eq("user_id", userId);
+    if (error) console.warn("arkive: contributor display_name set failed", error);
+  },
+
+  /** Contributor adds an item to the shared (owner) capsule row: read the
+   *  row, append to items_json, recompute counts, UPDATE in place.
+   *  RLS capsules_update_contributors (is_capsule_contributor=Accepted);
+   *  the column-authority trigger passes contributors for items_json/counts.
+   *  The decoded item is encoded byte-identically to iOS via the codec. */
+  async addItem(capsuleId, item) {
+    const row = await fetchCapsuleById(capsuleId);
+    if (!row) throw new Error("This capsule isn’t available to contribute to.");
+    if (row.state !== STATE.draft) throw new Error("This capsule is already sealed — it can’t take new additions.");
+    const items = ArkiveItemsCodec.decode(row.items_json);
+    items.push(item);
+    const encoded = ArkiveItemsCodec.encode(items);
+    const { error } = await supabase.from("capsules").update({
+      items_json: encoded,
+      letter_count: items.filter((i) => i.kind === ITEM_KIND.letter).length,
+      moment_count: items.filter((i) => i.kind !== ITEM_KIND.letter).length,
+      last_modified_at: new Date().toISOString(),
+    }).eq("id", capsuleId);
+    if (error) throw error;
+    return encoded;
+  },
+};
+
 /* (WS5 filled the former ArkiveDeliveryEngine placeholder — the live
    engine now lives in the WS5 section above.) */

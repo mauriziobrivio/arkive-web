@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — Capsules</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws8">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws9">
   <style>
     .capsule-grid {
       display: grid;
@@ -196,7 +196,7 @@
       bootSession, wireShell, fetchCapsuleRows, splitMailboxes, sortOpeningSoon,
       capsulePrimaryDateLine, capsuleRoutingLine, capsuleContentSummary,
       capsuleCoverUrl, capsuleHrefFor, ArkiveDeliveryEngine, STATUS,
-    } from "./assets/arkive.js?v=ws8";
+    } from "./assets/arkive.js?v=ws9";
 
     // Tabs wire first (delegated) — interactivity never waits on the network.
     const tablist = document.querySelector(".tabs");
@@ -301,7 +301,11 @@
     }
 
     function capsuleCard(row, { contributing, personPrefix }) {
-      const href = capsuleHrefFor(row);
+      // Contributing capsules route to the contributor surface: an unsealed
+      // one opens contribute.html (add items); a sealed one its read detail.
+      const href = contributing
+        ? (row.state === "draft" ? `./contribute.html?id=${encodeURIComponent(row.id)}` : `./capsule.html?id=${encodeURIComponent(row.id)}`)
+        : capsuleHrefFor(row);
       const card = el(href ? "a" : "article", "card capsule-card");
       if (href) card.href = href;
 
