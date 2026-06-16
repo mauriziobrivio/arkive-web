@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arkive — A capsule for you</title>
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws6">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws7">
   <style>
     .ceremony-main { max-width: 760px; }
     .state-block { margin-top: 60px; }
@@ -66,12 +66,12 @@
 <body hidden>
   <header class="shell-header">
     <a class="wordmark" href="./capsules.html">Arkive</a>
-    <nav class="shell-nav" aria-label="Primary">
+    <nav class="shell-nav" aria-label="Primary" id="shell-nav" hidden>
       <a href="./capsules.html">Capsules</a>
       <a href="./people.html">People</a>
       <a href="./settings.html">Settings</a>
     </nav>
-    <div class="shell-account">
+    <div class="shell-account" id="shell-account" hidden>
       <span data-account-name></span>
       <button class="btn btn-quiet" data-sign-out type="button">Sign Out</button>
     </div>
@@ -82,9 +82,29 @@
       <p class="empty-title">Bringing your capsule forward…</p>
     </div>
 
+    <!-- no session: a generic, contents-free teaser (RLS forbids any pre-auth read) -->
+    <div class="empty-state state-block sender-view" id="open-teaser" hidden>
+      <span class="micro-label">A capsule for you</span>
+      <p class="empty-title">Someone kept a capsule for you.</p>
+      <p class="empty-hint">Create a free account to open it — it’s yours to keep.</p>
+      <p class="actions">
+        <a class="btn btn-primary" id="teaser-create" href="./index.html">Create a free account to open</a>
+      </p>
+      <p class="login-toggle">
+        Already have an account? <a class="link-accent" id="teaser-signin" href="./index.html">Sign in</a>
+      </p>
+    </div>
+
     <div class="empty-state state-block" id="open-missing" hidden>
       <p class="empty-title">This capsule isn’t available.</p>
       <p class="empty-hint">It may have been removed, or it belongs to another account.</p>
+    </div>
+
+    <!-- claimed but not yet openable (scheduled / not-yet-delivered: link-only per the server guard) -->
+    <div class="empty-state state-block" id="open-notready" hidden>
+      <p class="empty-title">This capsule is on its way.</p>
+      <p class="empty-hint">It’s linked to your account and will open when its day arrives — you’ll find it under Capsules.</p>
+      <p class="actions" style="margin-top:22px"><a class="btn btn-quiet" href="./capsules.html">Go to your Arkive</a></p>
     </div>
 
     <div class="empty-state state-block sender-view" id="sender-view" hidden>
@@ -119,40 +139,69 @@
 
   <script type="module">
     import {
-      bootSession, wireShell, fetchCapsuleById, capsuleCoverUrl,
+      bootSession, wireShell, currentSession, fetchCapsuleById,
+      fetchReceivedCapsuleByShared, capsuleCoverUrl,
       ArkiveItemsCodec, renderCapsuleItems, createEl, ArkiveCeremonyWrites,
       fmtMedium, STATUS, DIRECTION, MAILBOX,
-    } from "./assets/arkive.js?v=ws6";
-
-    const boot = await bootSession();
-    wireShell(boot);
-    const userId = boot.user.id;
+    } from "./assets/arkive.js?v=ws7";
 
     const params = new URLSearchParams(window.location.search);
-    const capsuleId = params.get("id");
+    const capsuleId = params.get("id");          // the SENDER row id (recipient can't read it)
+    const shared = params.get("shared");         // the sharedCapsuleID — locates the recipient's own row
+    const em = params.get("em");                 // recipient email (B2) — for signup prefill
     const loadingEl = document.getElementById("open-loading");
 
-    let row = null;
-    try {
-      row = capsuleId ? await fetchCapsuleById(capsuleId) : null;
-    } catch (err) {
-      console.error("arkive: capsule fetch failed", err);
-    }
-    loadingEl.hidden = true;
-
-    if (!row) {
-      document.getElementById("open-missing").hidden = false;
-    } else if (!(row.direction === DIRECTION.received || row.mailbox === MAILBOX.received)) {
-      // a sender-row id pasted here — detail owns that view
-      window.location.replace(`./capsule.html?id=${encodeURIComponent(row.id)}`);
-    } else if (row.recipient_account_id !== userId) {
-      // The viewer can read this row (they created it) but the opening
-      // belongs to the recipient — no contents, no writes.
-      senderView(row);
-    } else if (row.opened_at) {
-      revisit(row);
+    // WP1: no session → a generic, contents-free teaser (RLS forbids any
+    // pre-auth capsule read) with a path into the recipient-only signup.
+    const session = await currentSession();
+    if (!session) {
+      renderTeaser();
     } else {
-      ceremony(row);
+      // Boot runs ensureAccount + claim_my_received_capsules (links this
+      // email's waiting capsules + materializes delivered ones) + the
+      // contributor claim. Then locate THIS recipient's row by `shared`.
+      const boot = await bootSession();
+      document.getElementById("shell-nav").hidden = false;
+      document.getElementById("shell-account").hidden = false;
+      wireShell(boot);
+      const userId = boot.user.id;
+
+      let row = null;
+      try {
+        if (shared) row = await fetchReceivedCapsuleByShared(shared, userId);
+        if (!row && capsuleId) row = await fetchCapsuleById(capsuleId);   // own/sender-row direct link
+      } catch (err) {
+        console.error("arkive: capsule fetch failed", err);
+      }
+      loadingEl.hidden = true;
+
+      if (!row) {
+        // Claimed-but-not-materialized (scheduled/sealed) → "on its way"; else missing.
+        const linkOnly = shared && (boot.claimedReceived || [])
+          .some((r) => r.shared_capsule_id === shared && !r.materialized);
+        document.getElementById(linkOnly ? "open-notready" : "open-missing").hidden = false;
+      } else if (!(row.direction === DIRECTION.received || row.mailbox === MAILBOX.received)) {
+        window.location.replace(`./capsule.html?id=${encodeURIComponent(row.id)}`);
+      } else if (row.recipient_account_id !== userId) {
+        senderView(row);
+      } else if (row.opened_at) {
+        revisit(row);
+      } else {
+        ceremony(row);
+      }
+    }
+
+    function renderTeaser() {
+      loadingEl.hidden = true;
+      const ctx = new URLSearchParams();
+      if (shared) ctx.set("shared", shared);
+      if (capsuleId) ctx.set("id", capsuleId);
+      if (em) ctx.set("em", em);
+      const base = ctx.toString() ? `&${ctx.toString()}` : "";
+      document.getElementById("teaser-create").href = `./index.html?mode=signup${base}`;
+      document.getElementById("teaser-signin").href = `./index.html?mode=signin${base}`;
+      document.getElementById("open-teaser").hidden = false;
+      document.body.removeAttribute("hidden");
     }
 
     function senderView(row) {

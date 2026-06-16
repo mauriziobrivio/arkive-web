@@ -156,6 +156,38 @@ export async function redirectIfSignedIn() {
   if (session) window.location.replace("./capsules.html");
 }
 
+/** The current session or null — without the redirect side-effect of
+ *  requireSession. Used by open.html to show the no-account teaser
+ *  before any auth bounce. */
+export async function currentSession() {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session;
+}
+
+/** Recipient-only sign-up (B5b — account creation is offered ONLY inside
+ *  the recipient-open flow, never as a general surface). Email confirmation
+ *  is on, so returns { needsConfirmation: true } with no session in the
+ *  common case; if the project ever disables confirmation a session comes
+ *  back and the caller can proceed inline. emailRedirectTo must be in the
+ *  Auth redirect allowlist (B4). */
+export async function signUpRecipient(email, password, emailRedirectTo) {
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: emailRedirectTo ? { emailRedirectTo } : {},
+  });
+  if (error) return { error };
+  return { error: null, session: data.session ?? null, needsConfirmation: !data.session };
+}
+
+/** Password-reset request → a web update-password landing (redirectTo must
+ *  be in the Auth redirect allowlist, B4). Callers show neutral
+ *  anti-enumeration copy regardless of outcome. */
+export async function requestPasswordReset(email, redirectTo) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+  return { error: error ?? null };
+}
+
 export async function signOutAndRedirect() {
   try {
     await supabase.auth.signOut();
@@ -177,9 +209,15 @@ export async function signOutAndRedirect() {
 export async function bootSession() {
   const session = await requireSession();
   const account = await ensureAccount(session.user);
-  await claimPendingInvitations();
+  // Claim any waiting contributor invites AND recipient capsules addressed
+  // to this confirmed email. Both are SECURITY DEFINER, idempotent, and
+  // non-fatal; run them together.
+  const [, claimedReceived] = await Promise.all([
+    claimPendingInvitations(),
+    claimReceivedCapsules(),
+  ]);
   sessionStorage.setItem(ENTITLEMENT_KEY, String(account?.is_comped === true));
-  return { session, user: session.user, account };
+  return { session, user: session.user, account, claimedReceived };
 }
 
 /** Mirrors iOS ensureAccountAndFetchDisplayName (ARKIVEApp.swift):
@@ -228,6 +266,29 @@ async function claimPendingInvitations() {
     }
   } catch (err) {
     console.error("arkive: claim_my_pending_invitations failed (non-fatal)", err);
+  }
+}
+
+/** SECURITY DEFINER RPC (B1, claim_my_received_capsules): links sealed/
+ *  delivered capsules addressed to the caller's CONFIRMED auth email
+ *  (vs recipient_contact_hint / guest_delivery_email) and materializes the
+ *  openable 'Received' row only for delivered ones (future/sealed are
+ *  link-only — premature-reveal guard lives server-side). Idempotent;
+ *  non-fatal at boot. Returns the claimed rows
+ *  ({ sender_capsule_id, shared_capsule_id, materialized }) or []. */
+export async function claimReceivedCapsules() {
+  try {
+    const { data, error } = await supabase.rpc("claim_my_received_capsules");
+    if (error) throw error;
+    const rows = Array.isArray(data) ? data : [];
+    if (rows.length > 0) {
+      const openable = rows.filter((r) => r.materialized).length;
+      console.info(`arkive: claimed ${rows.length} received capsule(s); ${openable} openable now`);
+    }
+    return rows;
+  } catch (err) {
+    console.error("arkive: claim_my_received_capsules failed (non-fatal)", err);
+    return [];
   }
 }
 
@@ -484,6 +545,21 @@ export async function fetchCapsuleById(id) {
   const { data, error } = await supabase
     .from("capsules").select(CAPSULES_SELECT).eq("id", id).maybeSingle();
   if (error) throw error;
+  return data;
+}
+
+/** Locate the recipient's OWN 'Received' row by the email link's `shared`
+ *  param. The email link's `id` is the SENDER row (recipient can't read it);
+ *  the recipient's materialized row carries shared_capsule_id = that shared
+ *  id. One row per (shared_capsule_id, recipient_account_id). */
+export async function fetchReceivedCapsuleByShared(sharedId, userId) {
+  const { data, error } = await supabase
+    .from("capsules").select(CAPSULES_SELECT)
+    .eq("shared_capsule_id", sharedId)
+    .eq("recipient_account_id", userId)
+    .eq("mailbox", MAILBOX.received)
+    .maybeSingle();
+  if (error) { console.error("arkive: fetchReceivedCapsuleByShared failed", error); return null; }
   return data;
 }
 

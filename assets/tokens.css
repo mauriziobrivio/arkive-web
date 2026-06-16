@@ -100,6 +100,22 @@ input[type="radio"]:focus-visible, input[type="file"]:focus-visible {
   gap: 20px;
 }
 
+/* inline accent link (bronze, underlined) */
+.link-accent {
+  color: var(--bronze);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-accent:hover { color: var(--ink); }
+
+/* auth-flow secondary line (sign-in/up/reset toggles) */
+.login-toggle {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
 /* ---------- micro-label (bronze, letterspaced caps) ---------- */
 
 .micro-label {

@@ -9,7 +9,7 @@
   <meta property="og:title" content="Arkive">
   <meta property="og:description" content="Your capsules, on the web. Sign in to your Arkive.">
   <meta name="description" content="Your capsules, on the web. Sign in to your Arkive.">
-  <link rel="stylesheet" href="./assets/tokens.css?v=ws6">
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws7">
   <style>
     .login-wrap {
       min-height: 100vh;
@@ -47,93 +47,288 @@
       max-width: 420px;
       line-height: 1.6;
     }
+    .login-toggle {
+      margin-top: 18px;
+      text-align: center;
+      font-size: 14px;
+      color: var(--ink-soft);
+    }
+    .link-btn {
+      background: none;
+      border: none;
+      font-family: var(--font-serif);
+      font-size: 14px;
+      color: var(--bronze);
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .link-btn:hover { color: var(--ink); }
+    .success-text {
+      color: var(--ink);
+      font-size: 15px;
+      line-height: 1.6;
+      text-align: center;
+      margin-top: 14px;
+    }
+    .forgot-row { margin-top: 12px; text-align: right; }
   </style>
 </head>
-<body>
+<body hidden>
   <div class="login-wrap">
     <div class="login-head">
       <div class="wordmark">Arkive</div>
-      <h1>Welcome back.</h1>
-      <p class="login-sub">Sign in to your Arkive.</p>
+      <h1 id="head-title">Welcome back.</h1>
+      <p class="login-sub" id="head-sub">Sign in to your Arkive.</p>
     </div>
 
-    <div class="card login-card">
-      <form class="login-form" id="login-form" novalidate>
+    <!-- SIGN IN -->
+    <div class="card login-card" id="view-signin">
+      <form class="login-form" id="signin-form" novalidate>
         <div class="form-row">
-          <label class="field-label" for="email">Email</label>
-          <input class="field" id="email" name="email" type="email"
+          <label class="field-label" for="signin-email">Email</label>
+          <input class="field" id="signin-email" name="email" type="email"
                  autocomplete="email" inputmode="email" spellcheck="false" required>
         </div>
         <div class="form-row">
-          <label class="field-label" for="password">Password</label>
-          <input class="field" id="password" name="password" type="password"
+          <label class="field-label" for="signin-password">Password</label>
+          <input class="field" id="signin-password" name="password" type="password"
                  autocomplete="current-password" required>
         </div>
-        <p class="error-text" id="login-error" role="alert" aria-live="polite"></p>
-        <button class="btn btn-primary" id="login-submit" type="submit">Sign In</button>
+        <div class="forgot-row"><button type="button" class="link-btn" id="to-reset">Forgot password?</button></div>
+        <p class="error-text" id="signin-error" role="alert" aria-live="polite"></p>
+        <button class="btn btn-primary" id="signin-submit" type="submit">Sign In</button>
       </form>
+      <p class="login-toggle" id="signin-toggle" hidden>
+        Opening a capsule for the first time?
+        <button type="button" class="link-btn" id="to-signup">Create a free account</button>
+      </p>
     </div>
 
-    <p class="login-foot">
+    <!-- CREATE ACCOUNT (recipient flow only) -->
+    <div class="card login-card" id="view-signup" hidden>
+      <form class="login-form" id="signup-form" novalidate>
+        <div class="form-row">
+          <label class="field-label" for="signup-email">Email</label>
+          <input class="field" id="signup-email" name="email" type="email"
+                 autocomplete="email" inputmode="email" spellcheck="false" required>
+        </div>
+        <div class="form-row">
+          <label class="field-label" for="signup-password">Choose a password</label>
+          <input class="field" id="signup-password" name="password" type="password"
+                 autocomplete="new-password" required>
+        </div>
+        <p class="error-text" id="signup-error" role="alert" aria-live="polite"></p>
+        <button class="btn btn-primary" id="signup-submit" type="submit">Create Account &amp; Open</button>
+      </form>
+      <p class="success-text" id="signup-success" role="status" aria-live="polite" hidden></p>
+      <p class="login-toggle">
+        Already have an account?
+        <button type="button" class="link-btn" id="back-to-signin">Sign in</button>
+      </p>
+    </div>
+
+    <!-- RESET REQUEST -->
+    <div class="card login-card" id="view-reset" hidden>
+      <form class="login-form" id="reset-form" novalidate>
+        <div class="form-row">
+          <label class="field-label" for="reset-email">Email</label>
+          <input class="field" id="reset-email" name="email" type="email"
+                 autocomplete="email" inputmode="email" spellcheck="false" required>
+        </div>
+        <p class="error-text" id="reset-error" role="alert" aria-live="polite"></p>
+        <p class="success-text" id="reset-success" role="status" aria-live="polite" hidden></p>
+        <button class="btn btn-primary" id="reset-submit" type="submit">Send Reset Link</button>
+      </form>
+      <p class="login-toggle">
+        <button type="button" class="link-btn" id="reset-back-to-signin">Back to sign in</button>
+      </p>
+    </div>
+
+    <p class="login-foot" id="login-foot">
       Need an account, or a password reset?<br>
       Manage your account in the Arkive app.
     </p>
   </div>
 
   <script type="module">
-    import { supabase, redirectIfSignedIn } from "./assets/arkive.js?v=ws6";
+    import {
+      supabase, currentSession, signUpRecipient, requestPasswordReset,
+    } from "./assets/arkive.js?v=ws7";
 
-    await redirectIfSignedIn();
+    const params = new URLSearchParams(location.search);
+    const shared = params.get("shared");
+    const capsuleId = params.get("id");
+    const emParam = params.get("em");
+    const initialMode = params.get("mode");           // 'signup' | 'signin' | null
+    // Recipient context = arrived from a capsule open link (carries `shared`).
+    // B5(b): the create-account surface appears ONLY in this context.
+    const recipientContext = !!shared;
 
-    const form = document.getElementById("login-form");
-    const emailField = document.getElementById("email");
-    const passwordField = document.getElementById("password");
-    const errorEl = document.getElementById("login-error");
-    const submitBtn = document.getElementById("login-submit");
+    // Where to land after a successful auth.
+    const postAuthURL = recipientContext
+      ? `./open.html?shared=${encodeURIComponent(shared)}${capsuleId ? `&id=${encodeURIComponent(capsuleId)}` : ""}`
+      : "./capsules.html";
+    // Where the signup-confirmation email should return the recipient.
+    // (Must be in the Auth redirect allowlist, B4.) Host-agnostic.
+    const confirmRedirect = new URL(postAuthURL, location.href).href;
+    const resetRedirect = new URL("./update-password.html", location.href).href;
 
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      errorEl.textContent = "";
+    // Already signed in → go straight where they were headed.
+    if (await currentSession()) {
+      window.location.replace(postAuthURL);
+    }
 
-      const email = emailField.value.trim().toLowerCase();
-      const password = passwordField.value;
+    const views = {
+      signin: document.getElementById("view-signin"),
+      signup: document.getElementById("view-signup"),
+      reset: document.getElementById("view-reset"),
+    };
+    const headTitle = document.getElementById("head-title");
+    const headSub = document.getElementById("head-sub");
+    const foot = document.getElementById("login-foot");
 
-      if (!email || !password) {
-        errorEl.textContent = "Enter your email and password.";
-        return;
+    function show(mode) {
+      for (const [name, el] of Object.entries(views)) el.hidden = name !== mode;
+      if (mode === "signin") {
+        headTitle.textContent = recipientContext ? "Open your capsule." : "Welcome back.";
+        headSub.textContent = recipientContext
+          ? "Sign in to open the capsule waiting for you."
+          : "Sign in to your Arkive.";
+      } else if (mode === "signup") {
+        headTitle.textContent = "Create your Arkive.";
+        headSub.textContent = "A free account, so you can open your capsule.";
+      } else {
+        headTitle.textContent = "Reset your password.";
+        headSub.textContent = "We’ll email you a link to set a new one.";
       }
+      // The "manage in the app" footer shows only for a plain visitor on the
+      // sign-in view; the create-account toggle only inside the recipient flow.
+      foot.hidden = recipientContext || mode !== "signin";
+      document.getElementById("signin-toggle").hidden = !recipientContext;
+      // Restore inner form/success state each time a view is (re)entered, so
+      // toggling away after a submit doesn't leave the form hidden.
+      if (mode === "signup") {
+        document.getElementById("signup-form").hidden = false;
+        document.getElementById("signup-success").hidden = true;
+      } else if (mode === "reset") {
+        document.getElementById("reset-form").hidden = false;
+        document.getElementById("reset-success").hidden = true;
+      }
+    }
 
-      submitBtn.disabled = true;
-      submitBtn.textContent = "Signing in…";
+    // Prefill recipient email everywhere from ?em=.
+    if (emParam) {
+      for (const id of ["signin-email", "signup-email", "reset-email"]) {
+        document.getElementById(id).value = emParam;
+      }
+    }
 
+    // Initial view: a recipient "create account" link → signup; else signin.
+    show(recipientContext && initialMode === "signup" ? "signup" : "signin");
+
+    // toggles
+    document.getElementById("to-signup")?.addEventListener("click", () => show("signup"));
+    document.getElementById("back-to-signin")?.addEventListener("click", () => show("signin"));
+    document.getElementById("to-reset")?.addEventListener("click", () => show("reset"));
+    document.getElementById("reset-back-to-signin")?.addEventListener("click", () => show("signin"));
+
+    // SIGN IN
+    const signinForm = document.getElementById("signin-form");
+    const signinErr = document.getElementById("signin-error");
+    const signinBtn = document.getElementById("signin-submit");
+    signinForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      signinErr.textContent = "";
+      const email = document.getElementById("signin-email").value.trim().toLowerCase();
+      const password = document.getElementById("signin-password").value;
+      if (!email || !password) { signinErr.textContent = "Enter your email and password."; return; }
+      signinBtn.disabled = true; signinBtn.textContent = "Signing in…";
       try {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) {
-          errorEl.textContent = friendlyAuthError(error);
-          return;
-        }
-        window.location.replace("./capsules.html");
+        if (error) { signinErr.textContent = friendlyAuthError(error); return; }
+        window.location.replace(postAuthURL);
       } catch (err) {
         console.error("arkive: sign-in failed", err);
-        errorEl.textContent = "Can’t reach Arkive right now — check your connection and try again.";
+        signinErr.textContent = "Can’t reach Arkive right now — check your connection and try again.";
       } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = "Sign In";
+        signinBtn.disabled = false; signinBtn.textContent = "Sign In";
       }
     });
 
+    // CREATE ACCOUNT (recipient only)
+    const signupForm = document.getElementById("signup-form");
+    const signupErr = document.getElementById("signup-error");
+    const signupBtn = document.getElementById("signup-submit");
+    const signupOk = document.getElementById("signup-success");
+    signupForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      signupErr.textContent = ""; signupOk.hidden = true;
+      const email = document.getElementById("signup-email").value.trim().toLowerCase();
+      const password = document.getElementById("signup-password").value;
+      if (!email || !password) { signupErr.textContent = "Enter your email and a password."; return; }
+      if (password.length < 8) { signupErr.textContent = "Use at least 8 characters for your password."; return; }
+      signupBtn.disabled = true; signupBtn.textContent = "Creating…";
+      try {
+        const { error, session, needsConfirmation } = await signUpRecipient(email, password, confirmRedirect);
+        if (error) { signupErr.textContent = friendlySignupError(error); return; }
+        if (session) {
+          window.location.replace(postAuthURL);          // confirmation disabled → straight in
+        } else if (needsConfirmation) {
+          signupForm.hidden = true;
+          signupOk.hidden = false;
+          signupOk.textContent = `Check ${email} for a confirmation link. Open it and your capsule will be waiting.`;
+        }
+      } catch (err) {
+        console.error("arkive: sign-up failed", err);
+        signupErr.textContent = "Can’t reach Arkive right now — check your connection and try again.";
+      } finally {
+        signupBtn.disabled = false; signupBtn.textContent = "Create Account & Open";
+      }
+    });
+
+    // RESET REQUEST
+    const resetForm = document.getElementById("reset-form");
+    const resetErr = document.getElementById("reset-error");
+    const resetBtn = document.getElementById("reset-submit");
+    const resetOk = document.getElementById("reset-success");
+    resetForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      resetErr.textContent = ""; resetOk.hidden = true;
+      const email = document.getElementById("reset-email").value.trim().toLowerCase();
+      if (!email) { resetErr.textContent = "Enter your email."; return; }
+      resetBtn.disabled = true; resetBtn.textContent = "Sending…";
+      try {
+        await requestPasswordReset(email, resetRedirect);
+        resetForm.hidden = true;                          // anti-enumeration: always neutral
+        resetOk.hidden = false;
+        resetOk.textContent = `If an account exists for ${email}, we’ve sent a link to set a new password.`;
+      } catch (err) {
+        console.error("arkive: reset request failed", err);
+        resetErr.textContent = "Can’t reach Arkive right now — check your connection and try again.";
+      } finally {
+        resetBtn.disabled = false; resetBtn.textContent = "Send Reset Link";
+      }
+    });
+
+    document.body.removeAttribute("hidden");
+
     function friendlyAuthError(error) {
       const message = (error?.message ?? "").toLowerCase();
-      if (message.includes("invalid login credentials")) {
-        return "That email and password don’t match our records.";
-      }
-      if (message.includes("email not confirmed")) {
-        return "This account hasn’t been confirmed yet — finish setup in the Arkive app.";
-      }
-      if (error?.status === 0 || message.includes("fetch")) {
-        return "Can’t reach Arkive right now — check your connection and try again.";
-      }
+      if (message.includes("invalid login credentials")) return "That email and password don’t match our records.";
+      if (message.includes("email not confirmed")) return "This account isn’t confirmed yet — check your email for the confirmation link.";
+      if (error?.status === 0 || message.includes("fetch")) return "Can’t reach Arkive right now — check your connection and try again.";
       return "Sign-in didn’t go through. Please try again.";
+    }
+    function friendlySignupError(error) {
+      const message = (error?.message ?? "").toLowerCase();
+      if (message.includes("already registered") || message.includes("already been registered") || message.includes("user already")) {
+        return "There’s already an account for this email — sign in instead.";
+      }
+      if (message.includes("password")) return "That password didn’t meet the requirements — try a longer one.";
+      if (error?.status === 0 || message.includes("fetch")) return "Can’t reach Arkive right now — check your connection and try again.";
+      return "Couldn’t create the account. Please try again.";
     }
   </script>
 </body>
