@@ -130,6 +130,7 @@
     const el = createEl;
     const boot = await bootSession();
     wireShell(boot);
+    const userId = boot.user.id;   // A0.2 — viewer identity for the ownership gate
 
     const params = new URLSearchParams(window.location.search);
     const capsuleId = params.get("id");
@@ -148,11 +149,20 @@
       missingEl.hidden = false;
     } else {
       const isReceived = row.direction === DIRECTION.received || row.mailbox === MAILBOX.received;
+      const isOwner = row.creator_user_id === userId;
       if (isReceived && row.status !== STATUS.opened) {
         // The ceremony is the reveal — a direct URL must not bypass it.
         window.location.replace(`./open.html?id=${encodeURIComponent(row.id)}`);
-      } else {
+      } else if (isReceived || isOwner) {
         render(row);
+      } else {
+        // A0.2 (audit A10-F-002) — defense-in-depth: a non-owner must never
+        // read a Sent-direction row's contents (a scheduled/sealed capsule
+        // before its opening day). The recipient's legitimate view is their
+        // own materialized Received row via open.html; this hand-crafted
+        // capsule.html?id={sender row} path renders nothing. No redirect (a
+        // bounce to open.html which redirects owners back here would loop).
+        missingEl.hidden = false;
       }
     }
 

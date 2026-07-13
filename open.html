@@ -153,6 +153,13 @@
     const em = params.get("em");                 // recipient email (B2) — for signup prefill
     const loadingEl = document.getElementById("open-loading");
 
+    // B1 (audit A10-F-001) — `userId` is declared at MODULE scope so the
+    // ceremony()/revisit() functions (siblings below, not nested in the else
+    // block) can close over it. Before this it was `const`-scoped inside the
+    // else block, so every signed-in recipient hit a ReferenceError before
+    // anything rendered — the web opening ceremony was 100% dead.
+    let userId;
+
     // WP1: no session → a generic, contents-free teaser (RLS forbids any
     // pre-auth capsule read) with a path into the recipient-only signup.
     const session = await currentSession();
@@ -166,7 +173,7 @@
       document.getElementById("shell-nav").hidden = false;
       document.getElementById("shell-account").hidden = false;
       wireShell(boot);
-      const userId = boot.user.id;
+      userId = boot.user.id;
 
       let row = null;
       try {
@@ -177,13 +184,28 @@
       }
       loadingEl.hidden = true;
 
+      const rowIsReceived = row && (row.direction === DIRECTION.received || row.mailbox === MAILBOX.received);
+
       if (!row) {
         // Claimed-but-not-materialized (scheduled/sealed) → "on its way"; else missing.
         const linkOnly = shared && (boot.claimedReceived || [])
           .some((r) => r.shared_capsule_id === shared && !r.materialized);
         document.getElementById(linkOnly ? "open-notready" : "open-missing").hidden = false;
-      } else if (!(row.direction === DIRECTION.received || row.mailbox === MAILBOX.received)) {
+      } else if (row.creator_user_id === userId) {
+        // The viewer OWNS this row (their own outgoing capsule) → detail view.
         window.location.replace(`./capsule.html?id=${encodeURIComponent(row.id)}`);
+      } else if (!rowIsReceived) {
+        // A0.2 + B5 (audit A10-F-002 / A10-F-003) — a Sent-direction row the
+        // viewer does NOT own. Never route its contents to capsule.html. If
+        // it's addressed to this recipient but not yet delivered, it's on its
+        // way (fixes the "isn't available / may have been removed" misfire on
+        // repeat visits, since this no longer depends on the this-boot claim
+        // return); otherwise a contents-free sender teaser.
+        if (row.recipient_account_id === userId) {
+          document.getElementById("open-notready").hidden = false;
+        } else {
+          senderView(row);
+        }
       } else if (row.recipient_account_id !== userId) {
         senderView(row);
       } else if (row.opened_at) {
