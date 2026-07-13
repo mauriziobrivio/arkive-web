@@ -104,6 +104,8 @@
     <!-- claimed but not yet openable (scheduled / not-yet-delivered: link-only per the server guard) -->
     <div class="empty-state state-block" id="open-notready" hidden>
       <p class="empty-title">This capsule is on its way.</p>
+      <!-- A0.2 step 2 — filled from the status-only RPC when available -->
+      <p class="empty-hint" id="notready-detail" hidden></p>
       <p class="empty-hint">It’s linked to your account and will open when its day arrives — you’ll find it under Capsules.</p>
       <p class="actions" style="margin-top:22px"><a class="btn btn-quiet" href="./capsules.html">Go to your Arkive</a></p>
     </div>
@@ -144,7 +146,7 @@
       bootSession, wireShell, currentSession, fetchCapsuleById,
       fetchReceivedCapsuleByShared, capsuleCoverUrl,
       ArkiveItemsCodec, renderCapsuleItems, createEl, ArkiveCeremonyWrites,
-      fmtMedium, STATUS, DIRECTION, MAILBOX,
+      fmtMedium, STATUS, DIRECTION, MAILBOX, supabase,
     } from "./assets/arkive.js?v=ws9";
 
     const params = new URLSearchParams(window.location.search);
@@ -187,10 +189,44 @@
       const rowIsReceived = row && (row.direction === DIRECTION.received || row.mailbox === MAILBOX.received);
 
       if (!row) {
-        // Claimed-but-not-materialized (scheduled/sealed) → "on its way"; else missing.
+        // A0.2 step 2 (#285) — the awaiting state now comes from the
+        // status-only RPC get_awaiting_capsule_status (SECURITY DEFINER;
+        // returns status/release_at/sender name for a capsule the caller is a
+        // party to, never contents). This is the read that survives step 3's
+        // policy narrowing: once the recipient SELECT arm is gated on
+        // Delivered/Opened, a scheduled sender row is unreadable here — the
+        // RPC is how "on its way" keeps rendering. It also replaces the
+        // this-boot claimedReceived dependence (the repeat-visit misfire).
+        let awaiting = null;
+        if (capsuleId) {
+          try {
+            const { data, error } = await supabase.rpc("get_awaiting_capsule_status", {
+              p_capsule_id: capsuleId,
+            });
+            if (!error && Array.isArray(data) && data.length) awaiting = data[0];
+            if (error) console.warn("arkive: awaiting-status RPC failed (falling back)", error);
+          } catch (err) {
+            console.warn("arkive: awaiting-status RPC threw (falling back)", err);
+          }
+        }
+        // Legacy fallback (shared-only links / RPC unavailable): the this-boot
+        // claim result still identifies a linked-but-not-materialized capsule.
         const linkOnly = shared && (boot.claimedReceived || [])
           .some((r) => r.shared_capsule_id === shared && !r.materialized);
-        document.getElementById(linkOnly ? "open-notready" : "open-missing").hidden = false;
+
+        const knownEnRoute = awaiting && (
+          awaiting.status === STATUS.scheduled ||
+          awaiting.status === STATUS.delivered ||
+          awaiting.status === STATUS.opened
+        );
+        if (knownEnRoute && awaiting.status === STATUS.scheduled) {
+          const detail = document.getElementById("notready-detail");
+          const bits = [];
+          if (awaiting.sender_display_name) bits.push(`From ${awaiting.sender_display_name}`);
+          if (awaiting.release_at) bits.push(`opens ${fmtMedium(awaiting.release_at)}`);
+          if (bits.length) { detail.textContent = bits.join(" · "); detail.hidden = false; }
+        }
+        document.getElementById((knownEnRoute || linkOnly) ? "open-notready" : "open-missing").hidden = false;
       } else if (row.creator_user_id === userId) {
         // The viewer OWNS this row (their own outgoing capsule) → detail view.
         window.location.replace(`./capsule.html?id=${encodeURIComponent(row.id)}`);
