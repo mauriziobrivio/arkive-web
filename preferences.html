@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Arkive — Notification preferences</title>
+  <link rel="stylesheet" href="./assets/tokens.css?v=ws9">
+  <style>
+    /* B6 #285 — a STATIC, read-only page. No session, no form, no ?email=
+       handling, no write surface, no IDOR. It replaces the /preferences 404
+       that every capsule email linked to, and explains where the real toggles
+       live (the iOS app). Deliberately auth-free so a signed-out recipient
+       who taps the email footer sees guidance, not a sign-in wall. */
+    body { min-height: 100vh; }
+    .prefs-main {
+      max-width: 620px;
+      margin: 0 auto;
+      padding: 72px 24px 96px;
+    }
+    .prefs-eyebrow {
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-mute, #807A70);
+      margin-bottom: 14px;
+    }
+    .prefs-main h1 {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-weight: 500;
+      font-size: 34px;
+      line-height: 1.15;
+      color: var(--ink, #14110E);
+      margin: 0 0 20px;
+    }
+    .prefs-lede {
+      font-size: 17px;
+      line-height: 1.6;
+      color: var(--ink-soft, #595652);
+      margin: 0 0 8px;
+    }
+    .prefs-card {
+      margin-top: 34px;
+      padding: 30px 32px;
+      background: var(--card, #E3DFD4);
+      border: 1px solid var(--border-soft, rgba(20,17,14,0.08));
+      border-radius: 20px;
+    }
+    .prefs-card h2 {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-weight: 500;
+      font-size: 20px;
+      color: var(--ink, #14110E);
+      margin: 0 0 10px;
+    }
+    .prefs-card + .prefs-card { margin-top: 20px; }
+    .prefs-card p {
+      font-size: 15.5px;
+      line-height: 1.6;
+      color: var(--ink-soft, #595652);
+      margin: 0;
+    }
+    .prefs-steps {
+      margin: 12px 0 0;
+      padding-left: 20px;
+      color: var(--ink-soft, #595652);
+      font-size: 15.5px;
+      line-height: 1.7;
+    }
+    .prefs-mail {
+      color: var(--accent, #8A6A3C);
+      font-weight: 500;
+      text-decoration: none;
+      border-bottom: 1px solid rgba(138,106,60,0.35);
+    }
+    .prefs-foot {
+      margin-top: 40px;
+      font-size: 13.5px;
+      color: var(--ink-mute, #807A70);
+      line-height: 1.6;
+    }
+    .prefs-foot a { color: var(--ink-soft, #595652); }
+    .wordmark {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 20px;
+      color: var(--ink, #14110E);
+      text-decoration: none;
+      letter-spacing: 0.02em;
+    }
+    .prefs-topbar {
+      max-width: 620px;
+      margin: 0 auto;
+      padding: 28px 24px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="prefs-topbar">
+    <a class="wordmark" href="https://arkive-it.app">Arkive</a>
+  </div>
+
+  <main class="prefs-main">
+    <p class="prefs-eyebrow">Email &amp; notifications</p>
+    <h1>Your notification preferences</h1>
+    <p class="prefs-lede">Arkive sends very little. When a capsule is delivered to you,
+      you'll get one email so you know it's arrived. If you've chosen to, you'll also get
+      a quiet note when a capsule you sent is opened. Nothing else.</p>
+
+    <div class="prefs-card">
+      <h2>Where to change them</h2>
+      <p>Every notification is controlled inside the Arkive app, on the device where you're
+        signed in:</p>
+      <ol class="prefs-steps">
+        <li>Open <strong>Arkive</strong> on your iPhone.</li>
+        <li>Go to your <strong>Profile</strong>.</li>
+        <li>Open <strong>Notifications</strong> to turn each kind of email and alert on or off.</li>
+      </ol>
+    </div>
+
+    <div class="prefs-card">
+      <h2>Prefer to stop delivery emails altogether?</h2>
+      <p>Email <a class="prefs-mail" href="mailto:support@arkive-it.com?subject=Unsubscribe">support@arkive-it.com</a>
+        and we'll remove your address from capsule delivery emails. A real person reads that inbox.</p>
+    </div>
+
+    <p class="prefs-foot">
+      This page is informational only — it can't see or change your account, and it never asks
+      for your details. Manage everything from the app.<br>
+      <a href="https://arkive-it.app">arkive-it.app</a>
+    </p>
+  </main>
+</body>
+</html>
